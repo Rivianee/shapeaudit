@@ -4,7 +4,6 @@
 
 O ShapeAudit compara duas versões de um modelo de ML e detecta quando a métrica ficou verde mas a lógica aprendida mudou. Em 12 anos de retreinos reais, ficou quieto em 81% deles — e falou exatamente nos dois momentos em que o mundo virou.
 
-[![Tests](https://github.com/SEU_USUARIO/shapeaudit/actions/workflows/tests.yml/badge.svg)](https://github.com/SEU_USUARIO/shapeaudit/actions)
 [![PyPI](https://badge.fury.io/py/shapeaudit.svg)](https://pypi.org/project/shapeaudit/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/)
