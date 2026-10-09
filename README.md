@@ -1,5 +1,8 @@
 # ShapeAudit
 
+[Veja a demonstração](https://rivianee.github.io/shapeaudit/demo/) · [Pacote no PyPI](https://pypi.org/project/shapeaudit/)
+
+
 **Seu modelo novo tem a mesma acurácia do antigo. Mas será que ele aprendeu a
 mesma coisa?**
 
