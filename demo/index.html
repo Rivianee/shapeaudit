@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ShapeAudit — uma semana na vida de um modelo</title>
+<style>
+:root{
+  --tinta:#1f1f1c; --tinta2:#4a4a45; --fraco:#8a8a85;
+  --papel:#faf9f6; --cartao:#fff; --linha:#e6e5e0;
+  --vermelho:#a3241c; --ambar:#8A6413; --verde:#1B6249;
+  --serif:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--papel);color:var(--tinta);
+  font:18px/1.55 var(--serif)}
+.folha{max-width:1060px;margin:0 auto;padding:0 24px 72px}
+a{color:var(--vermelho)}
+
+/* ── capa ───────────────────────────────────────────── */
+header.capa{padding:56px 0 28px;border-bottom:1px solid var(--linha)}
+.marca{font:600 13px/1 var(--sans);letter-spacing:.14em;text-transform:uppercase;
+  color:var(--fraco);margin-bottom:14px}
+h1{font:400 44px/1.1 var(--serif);margin:0 0 14px;letter-spacing:-.01em}
+h1 em{font-style:italic;color:var(--vermelho)}
+.linha-fina{font-size:21px;color:var(--tinta2);max-width:62ch;margin:0}
+.meta{margin-top:20px;font:14px/1.5 var(--sans);color:var(--fraco)}
+.meta code{font-family:var(--mono);background:#f0efea;padding:2px 7px;border-radius:4px;
+  color:var(--tinta)}
+
+/* ── seções ─────────────────────────────────────────── */
+section{padding:44px 0;border-bottom:1px solid var(--linha)}
+section:last-of-type{border-bottom:0}
+h2{font:600 15px/1 var(--sans);letter-spacing:.12em;text-transform:uppercase;
+  color:var(--fraco);margin:0 0 18px}
+h3{font:400 29px/1.25 var(--serif);margin:0 0 14px}
+p{margin:0 0 14px;max-width:68ch}
+.nota{font-size:16px;color:var(--tinta2)}
+
+/* ── o quadro da semana ─────────────────────────────── */
+table.semana{width:100%;border-collapse:collapse;margin:8px 0 18px;
+  font:16px/1.45 var(--sans)}
+table.semana th{text-align:left;font-size:12px;letter-spacing:.07em;
+  text-transform:uppercase;color:var(--fraco);font-weight:600;
+  padding:0 12px 9px 0;border-bottom:1px solid var(--linha)}
+table.semana td{padding:15px 12px 15px 0;border-bottom:1px solid var(--linha);
+  vertical-align:top}
+table.semana .dia{font-family:var(--serif);font-size:19px;white-space:nowrap}
+table.semana .auc{font-family:var(--mono);font-size:16px;white-space:nowrap}
+table.semana .dif{color:var(--fraco);font-size:14px}
+.oculto{color:var(--fraco);font-style:italic}
+.ver{display:inline-block;font:600 13px/1 var(--sans);letter-spacing:.03em;
+  padding:5px 11px;border-radius:999px;white-space:nowrap}
+.ver.ok{background:#eef5f1;color:var(--verde)}
+.ver.rev{background:#fbf6ea;color:var(--ambar)}
+.ver.blo{background:#fbefed;color:var(--vermelho)}
+.troca{font-family:var(--mono);font-size:16px}
+.troca b{font-size:19px}
+button.revelar{font:600 15px/1 var(--sans);background:var(--tinta);color:#fff;
+  border:0;border-radius:6px;padding:13px 20px;cursor:pointer}
+button.revelar:hover{background:var(--vermelho)}
+.depois{display:none}
+body.revelado .depois{display:block}
+/* numa tabela, `block` empilharia as colunas novas — a célula precisa
+   continuar sendo célula */
+body.revelado th.depois,
+body.revelado td.depois{display:table-cell}
+body.revelado .antes{display:none}
+.golpe{background:var(--cartao);border:1px solid var(--linha);border-left:3px solid var(--vermelho);
+  border-radius:0 8px 8px 0;padding:18px 22px;margin:4px 0 0;max-width:72ch}
+.golpe p{margin:0;font-size:19px}
+
+/* ── atos ───────────────────────────────────────────── */
+nav.atos{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 20px}
+nav.atos button{font:600 14px/1 var(--sans);background:var(--cartao);
+  color:var(--tinta2);border:1px solid var(--linha);border-radius:999px;
+  padding:11px 17px;cursor:pointer}
+nav.atos button[aria-selected=true]{background:var(--tinta);border-color:var(--tinta);color:#fff}
+.ato{display:none}
+.ato.vivo{display:block}
+.fatos{display:flex;gap:28px;flex-wrap:wrap;margin:0 0 18px;
+  background:var(--cartao);border:1px solid var(--linha);border-radius:8px;padding:18px 22px}
+.fato{display:flex;flex-direction:column;gap:3px}
+.fato span{font:600 11px/1 var(--sans);letter-spacing:.07em;text-transform:uppercase;
+  color:var(--fraco)}
+.fato b{font:400 24px/1.1 var(--serif)}
+.fato.dest b{color:var(--vermelho)}
+.moldura{border:1px solid var(--linha);border-radius:8px;overflow:hidden;
+  background:var(--cartao);margin-top:6px}
+.moldura .barra{font:12px/1 var(--sans);letter-spacing:.06em;text-transform:uppercase;
+  color:var(--fraco);padding:10px 14px;border-bottom:1px solid var(--linha);
+  display:flex;justify-content:space-between;align-items:center;gap:12px}
+.moldura .barra a{font-weight:600;text-decoration:none}
+.moldura iframe{display:block;width:100%;height:620px;border:0;background:#fff}
+
+/* ── camadas ────────────────────────────────────────── */
+ol.camadas{list-style:none;margin:0;padding:0;counter-reset:c;
+  display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+ol.camadas li{counter-increment:c;background:var(--cartao);border:1px solid var(--linha);
+  border-radius:8px;padding:18px 20px}
+ol.camadas li::before{content:counter(c);font:600 12px/1 var(--sans);color:var(--fraco);
+  display:block;margin-bottom:8px}
+ol.camadas b{display:block;font:400 21px/1.3 var(--serif);margin-bottom:6px}
+ol.camadas p{font-size:16px;color:var(--tinta2);margin:0}
+
+/* ── números ────────────────────────────────────────── */
+.numeros{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));
+  margin-bottom:20px}
+.num{background:var(--cartao);border:1px solid var(--linha);border-radius:8px;padding:18px 20px}
+.num b{display:block;font:400 34px/1 var(--serif);letter-spacing:-.02em;margin-bottom:7px}
+.num span{font-size:15px;color:var(--tinta2);display:block}
+ul.limites{margin:0;padding-left:22px;font-size:17px;color:var(--tinta2)}
+ul.limites li{margin-bottom:8px}
+ul.limites b{color:var(--tinta)}
+
+footer{padding:38px 0 0;font:15px/1.6 var(--sans);color:var(--fraco)}
+footer code{font-family:var(--mono);background:#f0efea;color:var(--tinta);
+  padding:3px 8px;border-radius:4px}
+footer .cmd{font-size:17px;margin-bottom:12px}
+
+@media (max-width:720px){
+  h1{font-size:33px} h3{font-size:24px} .folha{padding:0 18px 56px}
+  .moldura iframe{height:480px}
+}
+@media print{nav.atos,button.revelar{display:none} .ato{display:block}}
+</style>
+</head>
+<body>
+<div class="folha">
+
+<header class="capa">
+  <div class="marca">ShapeAudit · demonstração</div>
+  <h1>Seu modelo novo tem a mesma acurácia.<br><em>Mas aprendeu a mesma coisa?</em></h1>
+  <p class="linha-fina">Toda vez que um modelo é retreinado, alguém decide se a versão
+  nova sobe. A decisão costuma ser uma só: a acurácia caiu? Esta página acompanha
+  uma semana de um modelo de cancelamento de clientes e mostra o que essa
+  pergunta não cobre.</p>
+  <p class="meta">Dados públicos reais: 7.043 clientes de telecom &nbsp;·&nbsp;
+  biblioteca <code>pip install shapeaudit</code></p>
+</header>
+
+<section>
+  <h2>A semana</h2>
+  <h3>Três versões do mesmo modelo, três dias diferentes</h3>
+  <table class="semana">
+    <thead>
+      <tr><th>Quando</th><th>O que aconteceu</th><th>AUC</th>
+          <th class="depois">Auditoria</th><th class="depois">Fila de retenção</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="dia">Segunda</td>
+        <td>Retreino de rotina: mesmo código, mesmos dados</td>
+        <td class="auc">0,862 → 0,863 <span class="dif">(+0,0003)</span></td>
+        <td class="depois"><span class="ver ok">Pode promover</span></td>
+        <td class="depois troca"><b>6,0%</b> trocam</td>
+      </tr>
+      <tr>
+        <td class="dia">Quarta</td>
+        <td>O time trocou o algoritmo</td>
+        <td class="auc">0,862 → 0,859 <span class="dif">(−0,0032)</span></td>
+        <td class="depois"><span class="ver rev">Revise antes de promover</span></td>
+        <td class="depois troca"><b>23,5%</b> trocam</td>
+      </tr>
+      <tr>
+        <td class="dia">Sexta</td>
+        <td>Alguém mexeu no pipeline de dados</td>
+        <td class="auc">0,862 → 0,859 <span class="dif">(−0,0035)</span></td>
+        <td class="depois"><span class="ver blo">Não promova</span></td>
+        <td class="depois troca"><b>7,8%</b> trocam</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="antes">
+    <p class="nota">Os três casos variam menos de meio ponto percentual de AUC.
+    Um portão por métrica aprovaria os três.</p>
+    <button class="revelar" onclick="document.body.classList.add('revelado')">
+      Revelar o que a auditoria viu →</button>
+  </div>
+
+  <div class="depois golpe">
+    <p>A métrica não distingue os três casos. <b>Na sexta-feira, uma coluna
+    passou a chegar sempre com o mesmo valor</b> — e a acurácia quase não se
+    mexeu. Na quarta, 23,5% dos clientes escolhidos para a campanha de retenção
+    trocaram sem que nada no placar indicasse.</p>
+  </div>
+</section>
+
+<section>
+  <h2>O laudo</h2>
+  <h3>O que a ferramenta entrega em cada caso</h3>
+  <nav class="atos" role="tablist">
+    <button role="tab" aria-selected="true"  onclick="abrir(1,this)">Segunda · rotina</button>
+    <button role="tab" aria-selected="false" onclick="abrir(2,this)">Quarta · outro algoritmo</button>
+    <button role="tab" aria-selected="false" onclick="abrir(3,this)">Sexta · pipeline quebrado</button>
+  </nav>
+
+  <article class="ato vivo" id="ato1">
+    <div class="fatos">
+      <div class="fato"><span>AUC</span><b>0,862 → 0,863</b></div>
+      <div class="fato"><span>Veredito</span><b>Pode promover</b></div>
+      <div class="fato"><span>Fila de retenção</span><b>6,0% trocam</b></div>
+    </div>
+    <p class="nota">Retreino de rotina. Nenhuma das verificações encontrou mudança —
+    é o caso em que a ferramenta precisa ficar calada, e fica.</p>
+    <div class="moldura">
+      <div class="barra"><span>laudo gerado pela biblioteca</span>
+        <a href="laudo1.html" target="_blank">abrir em outra aba ↗</a></div>
+      <iframe src="laudo1.html" title="Laudo do retreino de rotina" loading="lazy"></iframe>
+    </div>
+  </article>
+
+  <article class="ato" id="ato2">
+    <div class="fatos">
+      <div class="fato"><span>AUC</span><b>0,862 → 0,859</b></div>
+      <div class="fato"><span>Veredito</span><b>Revise antes de promover</b></div>
+      <div class="fato dest"><span>Fila de retenção</span><b>23,5% trocam</b></div>
+    </div>
+    <p class="nota">Mesma acurácia, e três variáveis passaram a influenciar a
+    previsão de outro jeito. O <b>tempo de contrato</b> é o caso mais
+    interessante: continua com quase a mesma importância, mas a forma de usá-la
+    mudou. Olhando só importância de variáveis, ninguém veria.</p>
+    <div class="moldura">
+      <div class="barra"><span>laudo gerado pela biblioteca</span>
+        <a href="laudo2.html" target="_blank">abrir em outra aba ↗</a></div>
+      <iframe src="laudo2.html" title="Laudo da troca de algoritmo" loading="lazy"></iframe>
+    </div>
+  </article>
+
+  <article class="ato" id="ato3">
+    <div class="fatos">
+      <div class="fato"><span>AUC</span><b>0,862 → 0,859</b></div>
+      <div class="fato dest"><span>Veredito</span><b>Não promova</b></div>
+      <div class="fato"><span>Causa</span><b>Contract</b></div>
+    </div>
+    <p class="nota">Uma mudança no pipeline fez a coluna <b>Contract</b> chegar
+    sempre igual. Ela saiu da previsão: 24% de influência para zero. A acurácia
+    caiu 0,0035 — nada que acenda um alerta. O laudo nomeia a variável e lista
+    o que investigar primeiro.</p>
+    <div class="moldura">
+      <div class="barra"><span>laudo gerado pela biblioteca</span>
+        <a href="laudo3.html" target="_blank">abrir em outra aba ↗</a></div>
+      <iframe src="laudo3.html" title="Laudo do pipeline quebrado" loading="lazy"></iframe>
+    </div>
+  </article>
+</section>
+
+<section>
+  <h2>Como funciona</h2>
+  <h3>Três perguntas, feitas sobre os mesmos dados</h3>
+  <ol class="camadas">
+    <li><b>Alguma variável sumiu do modelo?</b>
+      <p>Compara o peso de cada variável nas duas versões — e separa “a coluna
+      sumiu do pipeline” de “o modelo decidiu não usar”.</p></li>
+    <li><b>Os dados chegam como no treino?</b>
+      <p>Compara o treino da versão nova com os dados que ela vai pontuar.</p></li>
+    <li><b>O modelo passou a reagir de outro jeito?</b>
+      <p>Compara a curva de efeito de cada variável entre as duas versões. Uma
+      distância detecta a mudança; uma classificação em cinco formas a nomeia.</p></li>
+  </ol>
+  <p class="nota" style="margin-top:16px">Cada laudo também declara <b>o que não
+  foi verificado</b>. “Não checamos” e “está tudo bem” são frases diferentes.</p>
+</section>
+
+<section>
+  <h2>O que sabemos</h2>
+  <h3>E o que ainda não sabemos</h3>
+  <div class="numeros">
+    <div class="num"><b>161</b><span>retreinos reais auditados em séries públicas
+      do setor elétrico brasileiro, 2010–2023</span></div>
+    <div class="num"><b>0</b><span>retreinos saudáveis bloqueados, somando esses
+      161 e 240 controles de bancada</span></div>
+    <div class="num"><b>16/18</b><span>falhas de pipeline bloqueadas com a
+      variável nomeada, em quatro famílias de modelo</span></div>
+    <div class="num"><b>8/10</b><span>tipos de falha localizados: join perdido,
+      escala, imputação, codificação, duplicação, vazamento, subgrupo…</span></div>
+  </div>
+  <ul class="limites">
+    <li><b>Dois pontos cegos conhecidos:</b> defasagem no tempo (deslocar uma
+      coluna não muda a distribuição dela) e overfit (decorar o treino não muda
+      quais variáveis importam).</li>
+    <li><b>Degradação parcial não bloqueia:</b> com até 80% das linhas de uma
+      variável corrompidas, o modelo perde 4 pontos e nada dispara.</li>
+    <li><b>Em bases pequenas é sensível:</b> abaixo de ~400 linhas de avaliação,
+      pede revisão em cerca de um terço dos retreinos saudáveis.</li>
+    <li><b>Fora de florestas é experimental</b> (redes e modelos lineares).</li>
+    <li><b>Não diz qual das duas versões está certa</b> — só que elas discordam.</li>
+    <li><b>Nenhum usuário externo validou ainda.</b></li>
+  </ul>
+  <p class="nota" style="margin-top:16px">Em uma frase: <b>confie no bloqueio para
+  parar; não confie na ausência dele para seguir.</b></p>
+</section>
+
+<footer>
+  <p class="cmd"><code>pip install shapeaudit</code></p>
+  <p>Método descrito em manuscrito científico atualmente em revisão. &nbsp;·&nbsp;
+  Riviane Maria Albuquerque Donha &nbsp;·&nbsp; Universidade Federal do Paraná</p>
+  <p>Esta página é estática: os três laudos foram gerados pela própria
+  biblioteca e abrem offline.</p>
+</footer>
+
+</div>
+<script>
+function abrir(n, botao){
+  document.querySelectorAll('.ato').forEach(function(a){a.classList.remove('vivo')});
+  document.getElementById('ato'+n).classList.add('vivo');
+  document.querySelectorAll('nav.atos button').forEach(function(b){
+    b.setAttribute('aria-selected', b===botao ? 'true' : 'false')});
+  window.atoAtual = n;
+}
+window.atoAtual = 1;
+// setas do teclado: útil no palco, sem precisar do mouse
+document.addEventListener('keydown', function(e){
+  var botoes = document.querySelectorAll('nav.atos button');
+  if (e.key === 'ArrowRight' || e.key === 'ArrowLeft'){
+    var n = window.atoAtual + (e.key === 'ArrowRight' ? 1 : -1);
+    if (n >= 1 && n <= 3) abrir(n, botoes[n-1]);
+  }
+  if (e.key === ' ' && !document.body.classList.contains('revelado')){
+    document.body.classList.add('revelado'); e.preventDefault();
+  }
+});
+</script>
+</body>
+</html>

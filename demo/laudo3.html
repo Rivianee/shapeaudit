@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="pt"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Laudo de auditoria de modelo — Não promova</title>
+<style>
+:root{
+  --papel:#FAFAFB; --tinta:#16181D; --suave:#585C66; --regua:#E1E2E6;
+  --marca:#8E2226; --marca-fundo:#FBF3F2;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--papel);color:var(--tinta);
+  font:17px/1.62 "Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+  -webkit-font-smoothing:antialiased;
+  font-variant-numeric:tabular-nums lining-nums}
+.folha{max-width:46rem;margin:0 auto;padding:clamp(28px,6vw,72px) clamp(20px,5vw,48px) 72px}
+
+/* cabeçalho */
+.topo{border-bottom:1px solid var(--regua);padding-bottom:18px;
+  margin-bottom:34px;display:flex;justify-content:space-between;
+  align-items:baseline;gap:16px;flex-wrap:wrap}
+.topo h1{font-size:18px;font-weight:600;letter-spacing:.01em}
+.topo .quando{font-size:14px;color:var(--suave)}
+
+/* veredito */
+.vered{background:var(--marca-fundo);border-left:4px solid var(--marca);
+  padding:22px 26px;margin-bottom:34px}
+.vered .rotulo{font-size:14px;color:var(--suave);margin-bottom:4px}
+.vered .valor{font-size:clamp(28px,4.6vw,38px);line-height:1.1;
+  font-weight:600;color:var(--marca);letter-spacing:-.01em}
+.vered .acao{font-size:16px;margin-top:8px}
+
+h2{font-size:15px;font-weight:600;margin-bottom:12px;letter-spacing:.01em}
+section{margin-bottom:34px}
+p{max-width:62ch}
+
+/* causa raiz */
+.raiz{border:1px solid var(--regua);padding:22px 26px;background:#fff}
+.vars{list-style:none;display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.vars code{background:var(--marca-fundo);color:var(--marca);
+  border:1px solid var(--marca);padding:3px 10px;font-size:15px;
+  font-family:ui-monospace,"SF Mono",Menlo,monospace}
+.raiz p{font-size:15.5px;color:var(--suave)}
+
+/* tabelas */
+p.rescard{font-size:14px;font-weight:600;color:#2a2a27;margin:0 0 8px}
+article.div h3 .d{display:flex;flex-direction:column;align-items:flex-end;gap:1px}
+article.div h3 .d b{font-size:12px;color:#a3241c;font-weight:600}
+article.div h3 .d i{font-size:11px;color:#9a9a95;font-style:normal}
+p.legenda-fixa{font-size:12.5px;color:#4a4a45;margin:0 0 6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+p.legenda-fixa .v1{color:#8a8a85} p.legenda-fixa .v2{color:#a3241c} p.legenda-fixa .fx{color:#e6cfcb}
+section.dec p.grande{display:flex;align-items:baseline;gap:10px;margin:2px 0}
+section.dec .num{font-size:34px;font-weight:700;color:#8A6413;letter-spacing:-.02em}
+section.dec p.sub{color:#4a4a45;font-size:14px;margin:0}
+section.umafrase p{font-size:15.5px;line-height:1.5;color:#2a2a27}
+div.ficha{display:flex;gap:22px;flex-wrap:wrap;margin:2px 0 10px}
+div.ficha .f{display:flex;flex-direction:column;gap:1px}
+div.ficha .f span{font-size:11px;color:#8a8a85;text-transform:uppercase;letter-spacing:.04em}
+div.ficha .f b{font-size:13.5px;font-weight:600;color:#2a2a27}
+p.ajuda.destaque{color:#3a3a36;border-left:2px solid #a3241c;padding-left:10px}
+p.lema{font-size:14px;font-weight:600;color:#2a2a27;margin-top:6px}
+section.invest ol{font-size:14px;line-height:1.6;padding-left:20px}
+section.invest p.fecho{font-size:13.5px;color:#4a4a45;border-top:1px solid #eee;padding-top:8px;margin-top:10px}
+section.passos.oculto{display:none}
+ul.lista li.grupo{display:block;grid-column:1/-1;width:100%;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#8a8a85;margin:14px 0 2px;border:0;padding:0;grid-template-columns:none}
+section.diff h3{font-size:13px;margin:14px 0 4px;color:#3a3a36;text-transform:uppercase;letter-spacing:.04em}
+ul.md{list-style:none;margin:0;padding:0}
+ul.md li{display:flex;gap:10px;align-items:baseline;padding:5px 0;border-bottom:1px solid #eee;font-size:14px;flex-wrap:wrap}
+ul.md li code{min-width:160px}
+ul.md .pe{color:#3a3a36} ul.md .dd{color:#8a8a85;margin-left:8px;font-size:12.5px}
+ul.md .fm{color:#a3241c;font-size:12.5px}
+ul.chips{list-style:none;margin:0;padding:0;display:flex;gap:8px;flex-wrap:wrap}
+ul.chips li{font-size:13px;padding:4px 10px;border-radius:999px;background:#f2f2f0;color:#3a3a36}
+ul.chips li.al{background:#fbf0ee;color:#8E2226} ul.chips li span{margin-right:6px}
+section.porque p,section.nota p,section.dec p{font-size:14px;line-height:1.55}
+section.passos ol{font-size:14px;line-height:1.6;padding-left:20px}
+section.dec.vazio p{color:#8a8a85}
+article.div{border:1px solid #e4e4e0;border-radius:6px;padding:14px 16px;margin:12px 0;background:#fff}
+article.div h3{margin:0 0 8px;font-size:15px;font-weight:600;display:flex;justify-content:space-between;align-items:baseline}
+article.div h3 .d{font-size:12px;color:#8a8a85;font-weight:400}
+article.div .linha{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap}
+article.div p{flex:1 1 300px;margin:0;font-size:14px;line-height:1.55}
+svg text.ax{font-size:9px;fill:#8a8a85;font-family:sans-serif}
+p.ajuda{font-size:12.5px;color:#6f6f6a;margin:0 0 4px}
+td.curva{padding:2px 0 0;text-align:right}td.curva svg{display:block;margin-left:auto}
+table{width:100%;border-collapse:collapse;font-size:15.5px}
+th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--regua)}
+th{font-size:13px;font-weight:600;color:var(--suave);
+  border-bottom-width:1.5px}
+td.n{text-align:right;font-variant-numeric:tabular-nums}
+code{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:14.5px}
+
+/* cobertura — o elemento de maior peso */
+.cob{border-top:2px solid var(--tinta);padding-top:22px}
+.cob .resumo{display:flex;align-items:baseline;gap:12px;margin-bottom:6px}
+.cob .fracao{font-size:34px;font-weight:600;line-height:1}
+.cob .fracao span{color:var(--suave);font-weight:400}
+.cob .legenda{font-size:15px;color:var(--suave)}
+.cob > p{font-size:15px;color:var(--suave);margin-bottom:20px;max-width:58ch}
+.lista{list-style:none}
+.lista li{display:grid;grid-template-columns:18px 1fr auto;gap:14px;
+  align-items:start;padding:11px 0;border-bottom:1px solid var(--regua)}
+.lista b{font-weight:600;font-size:15.5px;display:block}
+.perg{display:block;font-size:14px;color:var(--suave);margin-top:2px}
+.estado{font-size:13px;color:var(--suave);white-space:nowrap;padding-top:2px}
+.marca{width:11px;height:11px;margin-top:6px;border:1.5px solid var(--tinta)}
+.feito .marca{background:var(--tinta)}
+.falta .marca{border-style:dashed;border-color:var(--suave)}
+.falta b,.falta .estado{color:var(--suave)}
+
+/* rodapé */
+.pe{margin-top:40px;padding-top:18px;border-top:1px solid var(--regua);
+  font-size:13.5px;color:var(--suave);line-height:1.55}
+
+@media print{
+  body{background:#fff}
+  .folha{max-width:none;padding:0}
+  .vered,.raiz{break-inside:avoid}
+}
+@media (max-width:520px){
+  .lista li{grid-template-columns:18px 1fr;gap:10px}
+  .estado{grid-column:2;padding-top:4px}
+}
+</style></head><body>
+<div class="folha">
+
+  <header class="topo">
+    <h1>Laudo de auditoria de modelo</h1>
+    <span class="quando">2818 amostras avaliadas</span>
+  </header>
+
+  <div class="vered">
+    <div class="rotulo">Resultado</div>
+    <div class="valor">Não promova</div>
+    <div class="acao">A variável <code>Contract</code> deixou de influenciar a previsão. Ela também chega constante nos dados que a nova versão vai receber.</div>
+  </div>
+
+  <section class="sumario"><h2>Resumo</h2><ul class="chips"><li class="al"><span>⚠</span>1 variável(is) deixou de influenciar o modelo</li><li class="al"><span>⚠</span>1 relação(ões) mudaram de forma</li><li class="ok"><span>✓</span>dados de treino e de uso: nenhuma outra diferença</li><li class="ok"><span>✓</span>nenhuma substituição por variável quase idêntica</li></ul></section>
+  <section class="umafrase"><h2>Leitura em uma frase</h2><p>A evidência aponta primeiro para um problema de dados ou de pipeline, e não para uma mudança normal de aprendizado.</p></section>
+  <section class="porque"><h2>Por que este veredito</h2><p><code>Contract</code> praticamente deixou de participar da previsão e, na nova versão, aparece constante nos dados de treino. Essa combinação sugere que a variável pode ter sido perdida, neutralizada ou transformada incorretamente antes do treinamento — é mais compatível com falha de dados do que com uma mudança normal de aprendizado.</p></section>
+  <section class="diff"><h2>O que mudou entre as versões</h2><p class="ajuda">Duas perguntas: a variável continua importante? E continua influenciando a previsão do mesmo jeito?</p><h3>Saiu do modelo</h3><ul class="md"><li><code>Contract</code><span class="pe">24% → 0%<span class="dd">-24.4 pp</span></span></li></ul><h3>Mesmo peso, comportamento diferente</h3><p class="ajuda destaque">Uma variável pode continuar com importância parecida e ainda assim ser usada de forma diferente pelo modelo. Olhando só importância, ninguém veria estas.</p><ul class="md"><li><code>TotalCharges</code><span class="pe">6% → 10%<span class="dd">+4.6 pp</span></span><span class="fm">mesma forma, curva diferente</span></li></ul></section>
+  
+    <section class="raiz">
+      <h2>Comece por aqui</h2>
+      <ul class="vars"><li><code>Contract</code></li></ul>
+      <p>Esse padrão é compatível com falha no pipeline de dados: uma coluna que virou nula, um join perdido, um filtro novo. Confirme a origem antes de corrigir o modelo.</p>
+    </section>
+  
+  <section><h2>Variáveis que mudaram de padrão</h2><p class="legenda-fixa"><span class='v1'>▬</span> versão atual &nbsp; <span class='v2'>▬</span> versão candidata &nbsp; <span class='fx'>▨</span> região de maior divergência</p><p class="ajuda">Cinza: versão anterior. Vermelho: versão nova. A faixa sombreada é onde as duas mais discordam. O eixo horizontal é o valor da variável; o vertical, o efeito dela na predição.</p><article class="div"><h3><code>TotalCharges</code><span class="d"><b>acima do limite esperado</b></span></h3><p class="rescard">mesma direção, intensidade diferente</p><div class="ficha"><div class="f"><span>influência</span><b>6% → 10%</b></div><div class="f"><span>forma</span><b>decrescente</b></div><div class="f"><span>maior divergência</span><b>0 – 77.15</b></div></div><div class="linha"><svg viewBox="0 0 330 128" width="330" height="128" role="img" aria-label="efeito por faixa da variável"><rect x="44.0" y="12" width="15.3" height="90" fill="#a3241c" opacity="0.07"/><line x1="44" y1="73.8" x2="320" y2="73.8" stroke="#d6d6d2" stroke-width="1"/><path d="M 44.0,32.3 L 74.7,51.9 L 105.3,73.9 L 136.0,75.5 L 166.7,75.3 L 197.3,81.9 L 228.0,83.9 L 258.7,84.5 L 289.3,83.5 L 320.0,84.0" fill="none" stroke="#8a8a85" stroke-width="1.6"/><path d="M 44.0,12.0 L 74.7,33.3 L 105.3,62.3 L 136.0,67.9 L 166.7,69.3 L 197.3,84.3 L 228.0,89.2 L 258.7,94.5 L 289.3,95.0 L 320.0,102.0" fill="none" stroke="#a3241c" stroke-width="2"/><text x="44" y="120" class="ax">0</text><text x="320" y="120" class="ax" text-anchor="end">8672</text><text x="0" y="20" class="ax">+0.10</text><text x="0" y="102" class="ax">-0.04</text></svg><p>A direção geral continua a mesma, mas a intensidade do efeito mudou nessa faixa. Nessa faixa o efeito da versão nova é mais alto (+0.066 → +0.098).</p></div></article></section>
+  <section class="nota"><h2>Se a forma continua a mesma, por que sinalizou?</h2><p>A classificação resume a <b>direção geral</b> da relação. A distância detecta mudanças <b>dentro</b> dessa mesma forma: intensidade, curvatura ou a faixa de maior efeito. Direção preservada não é comportamento preservado.</p><p class="lema">A distância detecta. A forma explica.</p></section>
+  <section class="dec"><h2>A mudança afetou a decisão?</h2><p class="grande"><b>Sim.</b> <span class="num">7.8%</span></p><p class="sub">22 de 281 casos selecionados mudaram entre as versões.</p></section>
+  <section class="invest"><h2>Por onde começar</h2><div class="ficha"><div class="f"><span>comece por</span><b><code>Contract</code></b></div><div class="f"><span>motivo</span><b>variável deixou de influenciar o modelo</b></div></div><p class="ajuda">Verifique, nesta ordem:</p><ol><li>verifique se <code>Contract</code> chegou nula, constante ou se perdeu em algum join;</li><li>compare as transformações entre a versão anterior e a nova (encoding, imputação, filtros);</li><li>confirme se outra variável muito correlacionada assumiu o papel dela;</li><li>corrija o pipeline e reexecute o treino, se for o caso;</li><li>só então avalie se a nova versão deve ser promovida.</li></ol><p class="fecho">Se a mudança for explicada pelos dados ou pelo domínio, documente a justificativa e promova. Se não for explicada, revise pipeline e modelo antes do deploy.</p></section>
+
+  <section class="cob">
+    <div class="resumo">
+      <span class="fracao">5<span>/6</span></span>
+      <span class="legenda">verificações executadas</span>
+    </div>
+    <p>O resultado acima vale para o que foi verificado. As linhas marcadas como não verificadas não indicam ausência de problema — indicam ausência de exame.</p>
+    <ul class="lista"><li class="grupo">Checks principais</li><li class="feito"><span class="marca"></span><div><b>Alguma variável sumiu do modelo?</b><span class="perg">Uma variável que pesava antes parou de influenciar a previsão.</span></div><span class="estado">verificado</span></li><li class="feito"><span class="marca"></span><div><b>O modelo passou a reagir de outro jeito?</b><span class="perg">A mesma variável influencia a previsão de forma diferente.</span></div><span class="estado">verificado</span></li><li class="feito"><span class="marca"></span><div><b>Os dados chegam como no treino?</b><span class="perg">O que o modelo recebe hoje é diferente do que ele viu ao treinar.</span></div><span class="estado">verificado</span></li><li class="grupo">Checks adicionais</li><li class="feito"><span class="marca"></span><div><b>E fora da faixa usual?</b><span class="perg">O modelo muda de comportamento em valores extremos.</span></div><span class="estado">verificado</span></li><li class="feito"><span class="marca"></span><div><b>Algum grupo foi afetado de forma diferente?</b><span class="perg">A mudança se concentra num subconjunto dos casos.</span></div><span class="estado">verificado</span></li><li class="falta"><span class="marca"></span><div><b>O erro mudou para algum grupo de pessoas?</b><span class="perg">duas versões podem errar igual no total e errar mais para um grupo específico. Se o seu modelo afeta pessoas, meça isso à parte com `fairness_evolucao`</span></div><span class="estado">não verificado</span></li></ul>
+  </section>
+
+  <footer class="pe">
+    Atribuições calculadas por SHAP. Gerado por ShapeAudit. Os limites conhecidos deste método estão em LIMITATIONS.md.
+  </footer>
+
+</div></body></html>

@@ -1,0 +1,18 @@
+# Exemplo: GitHub Actions com modelcheck como gate de deploy
+name: ml-deploy
+on: [push]
+jobs:
+  validate-model:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install -e . scikit-learn
+      - name: Gate modelcheck
+        run: python validate_model.py   # chama run_gate(report)
+  deploy:
+    needs: validate-model   # só roda se o gate passar
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "deploy aqui"

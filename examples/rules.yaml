@@ -1,0 +1,7 @@
+rules:
+  - feature: price
+    expected_direction: negative
+    description: "Preço mais alto deve reduzir a probabilidade de venda"
+  - feature: age
+    expected_direction: positive
+    description: "Clientes mais velhos tendem a ter maior score de crédito"

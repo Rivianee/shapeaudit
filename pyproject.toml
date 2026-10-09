@@ -1,0 +1,57 @@
+[project]
+name = "shapeaudit"
+version = "1.0.2"
+description = "Descubra se o modelo novo aprendeu a mesma coisa que o antigo — auditoria entre duas versões, com laudo em HTML"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [{name = "Riviane Maria Albuquerque Donha", email = "riviane.donha@ufpr.br"}]
+keywords = ["machine-learning", "mlops", "model-monitoring", "explainability",
+            "shap", "model-audit", "ci-cd"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = [
+    "shap>=0.44,<0.53",
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "pyyaml>=6.0",
+    "scipy>=1.10",
+    "matplotlib>=3.7",
+    "scikit-learn>=1.3",
+]
+
+[project.scripts]
+shapeaudit = "modelcheck.cli:main"
+modelguard = "modelcheck.cli:main"
+modelcheck = "modelcheck.cli:main"
+
+[project.optional-dependencies]
+mlflow = ["mlflow-skinny>=2.10"]
+# shap 0.48 nao le o base_score do XGBoost 3.x: com ele a camada de forma
+# falha e a importancia caia para outro metodo (bug 33).
+xgboost = ["xgboost>=1.7,<3"]
+lightgbm = ["lightgbm>=4.0"]
+evidently = ["evidently>=0.7"]
+fairlearn = ["fairlearn>=0.10"]
+dev = ["pytest>=7.0"]
+
+[project.urls]
+Homepage = "https://github.com/Rivianee/shapeaudit"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["modelcheck*", "modelguard*", "shapeaudit*"]
