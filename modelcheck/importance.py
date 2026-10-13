@@ -32,15 +32,111 @@ def _shap_importance(model, X: pd.DataFrame,
         import shap
         Xs = X.sample(min(n_sample, len(X)), random_state=seed)
         sv = shap.TreeExplainer(model).shap_values(Xs)
-        # classificação: shap pode devolver lista [classe0, classe1] ou 3D
-        if isinstance(sv, list):
-            sv = sv[1] if len(sv) > 1 else sv[0]
-        sv = np.asarray(sv)
-        if sv.ndim == 3:
-            sv = sv[:, :, 1] if sv.shape[2] > 1 else sv[:, :, 0]
-        return np.abs(sv).mean(axis=0)
+        # BUG 68 (v1.0.4): multiclasse usava só a classe 1; uma variável que
+        # separa as classes 0 e 2 ficava invisível. Agora soma as classes
+        # (binário continua igual: as duas fatias são espelho).
+        from modelcheck.frechet import importancia_media_abs
+        return importancia_media_abs(sv)
     except Exception:
         return None
+
+
+def _arvores_independentes(model):
+    """Árvores de um ensemble por bagging (RandomForest/ExtraTrees), ou None."""
+    est = getattr(model, 'estimators_', None)
+    nome = type(model).__name__
+    if est is None or not isinstance(est, list) or len(est) < 5:
+        return None
+    if not any(k in nome for k in ('RandomForest', 'ExtraTrees')):
+        return None       # boosting: árvores sequenciais, não são réplicas
+    return est
+
+
+def _shap_por_arvore(arvores, Xs):
+    """Matriz (T, n, p[, K]) com a atribuição de cada árvore em Xs."""
+    import shap
+    from modelcheck.frechet import como_array_shap
+    Xv = np.asarray(Xs, dtype=float)
+    return np.stack([como_array_shap(shap.TreeExplainer(t).shap_values(Xv))
+                     .astype(np.float32) for t in arvores])
+
+
+def _imp_lote(M, K):
+    """Importância média |φ| para um lote (B, n, p[, K]) -> (B, p)."""
+    if M.ndim == 4:
+        M = M[..., 1] if K == 2 else M
+        return np.abs(M).mean(axis=(1, 3)) if M.ndim == 4 else np.abs(M).mean(axis=1)
+    return np.abs(M).mean(axis=1)
+
+
+def colapso_confirmado_por_arvores(model_v1, model_v2, X, nomes,
+                                   n_perm: int = 300, n_sample: int = 150,
+                                   seed: int = 0):
+    """
+    BUG 81 (v1.0.4): BLOQUEADO falso em alta dimensão.
+
+    Com 200 variáveis e uma floresta de 100 árvores, metade dos retreinos
+    SAUDÁVEIS (só a semente muda) saía BLOQUEADO, com 6 a 9 variáveis de
+    ruído acusadas. Variável de ruído ganha peso minúsculo que oscila muito
+    entre sementes: 0,8% -> 0,2% parece colapso. O piso adaptativo do bug 37
+    (1/p) deixa essas variáveis entrarem, e o bootstrap de linhas do detector
+    mede só ruído de amostragem — não o ruído do retreino, que é o que conta.
+
+    Numa floresta por bagging cada árvore é uma réplica independente do
+    procedimento de treino. Se a mudança fosse só acaso, as árvores das duas
+    versões seriam intercambiáveis. Teste de permutação: junta as árvores,
+    sorteia divisões em dois grupos do mesmo tamanho das florestas, e mede a
+    razão de peso em cada divisão. Colapso real (v2 nunca usa a coluna, v1
+    sempre usa) é extremo nessa distribuição; ruído usado em 2 de 40 árvores
+    não é.
+
+    (Uma primeira versão reamostrava as árvores de cada versão
+    separadamente. Falhava: variável de ruído ausente de todas as árvores da
+    v2 continuava ausente em toda reamostragem e parecia colapso certo.)
+
+    Estatística: log(peso_v1) - log(peso_v2), padronizada pela média e pelo
+    desvio da distribuição nula (escore z). Um p-valor por sorteio não serve:
+    com 300 sorteios o menor p possível é 0,003, e depois da correção para
+    200 variáveis nada poderia ser confirmado — nem o colapso real.
+
+    Devolve {variavel: z} ou None quando não se aplica (modelo que não é
+    floresta por bagging).
+    """
+    a1, a2 = _arvores_independentes(model_v1), _arvores_independentes(model_v2)
+    if a1 is None or a2 is None or not nomes:
+        return None
+    Xs = X.sample(min(n_sample, len(X)), random_state=seed)
+    cols = list(X.columns)
+    idx = [cols.index(f) for f in nomes]
+    P = np.concatenate([_shap_por_arvore(a1, Xs), _shap_por_arvore(a2, Xs)])
+    T1, T = len(a1), len(P)
+    K = P.shape[3] if P.ndim == 4 else 0
+    forma = P.shape[1:]
+    flat = P.reshape(T, -1)
+
+    def razao(W1, W2):
+        # log(peso_v1) - log(peso_v2); eps relativo ao peso total
+        I1 = _imp_lote((W1 @ flat).reshape((-1,) + forma), K)
+        I2 = _imp_lote((W2 @ flat).reshape((-1,) + forma), K)
+        eps = 1e-4 * (I1.sum(axis=1, keepdims=True) + I2.sum(axis=1, keepdims=True)) / 2
+        return np.log(I1[:, idx] + eps) - np.log(I2[:, idx] + eps)
+
+    w1 = np.zeros((1, T), np.float32); w1[0, :T1] = 1.0 / T1
+    w2 = np.zeros((1, T), np.float32); w2[0, T1:] = 1.0 / (T - T1)
+    obs = razao(w1, w2)[0]
+
+    rng = np.random.RandomState(seed)
+    nulo = []
+    for _ in range(0, n_perm, 100):
+        W1 = np.zeros((100, T), np.float32); W2 = np.zeros((100, T), np.float32)
+        for k in range(100):
+            perm = rng.permutation(T)
+            W1[k, perm[:T1]] = 1.0 / T1
+            W2[k, perm[T1:]] = 1.0 / (T - T1)
+        nulo.append(razao(W1, W2))
+    nulo = np.concatenate(nulo)[:n_perm]
+    z = (obs - nulo.mean(axis=0)) / (nulo.std(axis=0) + 1e-9)
+    return {f: float(v) for f, v in zip(nomes, z)}
 
 
 def _perturbation_importance(model, X: pd.DataFrame,
@@ -55,16 +151,26 @@ def _perturbation_importance(model, X: pd.DataFrame,
     Não precisa de y — mede sensibilidade, não perda de acurácia.
     """
     rng = np.random.RandomState(seed)
-    # classificação: usa probabilidade da classe positiva
+    # classificação: usa probabilidade da classe positiva.
+    # BUG 70 (v1.0.4): com 3+ classes caía em predict() e media |rótulo
+    # permutado - rótulo|: trocar 0->2 contava o dobro de 0->1, e renomear
+    # as classes mudava a importância. Agora usa a distância de variação
+    # total entre os vetores de probabilidade, que não depende do rótulo.
     def _pred(Z):
         if hasattr(model, 'predict_proba'):
             try:
-                p = model.predict_proba(Z)
+                p = np.asarray(model.predict_proba(Z), dtype=float)
                 if p.ndim == 2 and p.shape[1] == 2:
-                    return np.asarray(p[:, 1], dtype=float)
+                    return p[:, 1]
+                if p.ndim == 2 and p.shape[1] > 2:
+                    return p
             except Exception:
-                pass
+                pass    # noqa: lacuna-nao-aplicavel — cai no predict()
         return np.asarray(model.predict(Z), dtype=float)
+
+    def _dist(a, b):
+        d = np.abs(a - b)
+        return 0.5 * d.sum(axis=1) if d.ndim == 2 else d
     base = _pred(X)
     imps = np.zeros(len(feature_names))
 
@@ -93,7 +199,7 @@ def _perturbation_importance(model, X: pd.DataFrame,
         for _ in range(n_repeat):
             Xp = X.copy()
             Xp[f] = rng.permutation(Xp[f].values)
-            deltas.append(np.abs(_pred(Xp) - base).mean())
+            deltas.append(_dist(_pred(Xp), base).mean())
         imps[j] = float(np.mean(deltas))
 
     # No modo lazy, escala o denominador para estimar a soma total
@@ -147,6 +253,14 @@ class ImportanceCollapseDetector:
     def _importances(self, model, X, feature_names, seed, subset=None):
         imp = _shap_importance(model, X, self.n_sample, seed)
         if imp is not None:
+            # BUG 69 (v1.0.4): o SHAP vem na ordem das colunas de X; o resto
+            # do detector indexa pela posição em feature_names. Alinha pelo
+            # nome para nomes em outra ordem (ou subconjunto) não trocarem
+            # a culpa de variável.
+            cols = list(X.columns)
+            if len(imp) == len(cols) and list(feature_names) != cols:
+                pos = {c: i for i, c in enumerate(cols)}
+                imp = np.array([imp[pos[f]] for f in feature_names], float)
             return imp, 'SHAP'
         return (_perturbation_importance(model, X, feature_names, seed=seed,
                                          subset=subset),
@@ -337,6 +451,62 @@ class ImportanceCollapseDetector:
                 'ratio_ci':     (round(float(lo), 3), round(float(hi), 3)),
                 'alert':        alert,
             })
+
+        # BUG 81: confirma os colapsos contra o ruído do próprio retreino
+        suspeitos = [r['feature'] for r in results
+                     if r['alert'] == 'IMPORTANCE_COLLAPSE']
+        if suspeitos:
+            try:
+                zs = colapso_confirmado_por_arvores(model_v1, model_v2,
+                                                    X_eval, suspeitos)
+            except Exception:
+                zs = None  # noqa: lacuna-nao-aplicavel — fica o critério antigo
+            if zs is None:
+                # BUG 82 (v1.0.4): fora de floresta (boosting estocástico,
+                # p=200) o mesmo falso BLOQUEADO aparecia em 3 de 3 retreinos
+                # saudáveis, e as árvores do boosting não são réplicas para o
+                # teste de permutação. Critério de massa de ruído: quando o
+                # peso está concentrado em poucas variáveis (número efetivo
+                # < p/4), a cauda é ruído, e uma variável só "colapsa" se
+                # antes pesava claramente acima dela. Medido (GBM estocástico,
+                # p=200 e 500, 700 variáveis de ruído): peso/máximo da cauda
+                # chega a 2,3 no ruído e começa em 4,5 numa variável real
+                # fraca. Teto: 3x o máximo da cauda. Em modelo denso não há
+                # cauda de ruído e nada muda.
+                w = R1.mean(0)
+                p_ = len(w)
+                n_eff = 1.0 / float((w ** 2).sum() + 1e-12)
+                if p_ >= 20 and n_eff < 0.25 * p_:
+                    k = int(np.ceil(n_eff))
+                    cauda = np.sort(w)[:-k] if k < p_ else w
+                    teto = 3.0 * float(cauda.max())
+                    for r in results:
+                        if r['feature'] in suspeitos and r['weight_v1'] < teto:
+                            r['alert'] = None
+                            r['colapso_nao_confirmado'] = True
+                            r['peso_na_massa_de_ruido'] = round(teto, 5)
+                            alerts.remove('IMPORTANCE_COLLAPSE')
+            if zs:
+                # correção pelo número de variáveis TESTADAS (todas acima do
+                # piso), não só pelas suspeitas: a suspeita já é uma seleção.
+                piso_ = min(self.min_rel_weight, 1.0 / max(len(feature_names), 1))
+                m = max(1, sum(1 for r in results if r['weight_v1'] >= piso_))
+                # A nula tem cauda pesada (variável de ruído alterna entre
+                # "usada por poucas árvores" e "nenhuma"), então a cauda
+                # normal subestima o limiar. Medido em 810 variáveis de ruído
+                # (p=60-500, 10-100 árvores, retreinos saudáveis): z máximo
+                # 4,9. Colapso real: 17 a 42 (forte), >= 6 (fraco) exceto em
+                # floresta de 10-30 árvores com 200+ variáveis. Piso 6.
+                z_crit = max(6.0, float(scipy_stats.norm.ppf(1 - 0.05 / m)))
+                for r in results:
+                    f = r['feature']
+                    if f not in zs:
+                        continue
+                    r['z_permutacao_arvores'] = round(zs[f], 2)
+                    if zs[f] < z_crit:
+                        r['alert'] = None
+                        r['colapso_nao_confirmado'] = True
+                        alerts.remove('IMPORTANCE_COLLAPSE')
 
         # reordenação global do ranking
         rho, p_rank = scipy_stats.spearmanr(R1.mean(0), R2.mean(0))

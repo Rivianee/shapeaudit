@@ -47,12 +47,15 @@ def _shape_profile_small_n(feature_values, feature_shap, min_n=8):
     # ── Método 2: Bootstrap + bins ─────────────────────────────
     def _bootstrap(x, y, n_boot=80, n_bins=4):
         shapes = []
+        # BUG 78 (v1.0.4): sem semente, o nome da forma mudava de uma
+        # execução para outra quando 20 <= n < 30.
+        rng = np.random.RandomState(0)
         for _ in range(n_boot):
-            idx = np.random.choice(n, n, replace=True)
+            idx = rng.choice(n, n, replace=True)
             xb, yb = x[idx], y[idx]
             try:
                 bins = pd.qcut(xb, n_bins, duplicates='drop')
-                means = pd.Series(yb).groupby(bins).mean().values
+                means = pd.Series(yb).groupby(bins, observed=True).mean().values
                 if len(means) < 3:
                     continue
                 diffs = np.diff(means)

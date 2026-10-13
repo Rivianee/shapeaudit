@@ -1,12 +1,60 @@
 name: tests
-on: [push, pull_request]
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:          # botão "Run workflow" na aba Actions
+  schedule:
+    - cron: "17 6 * * 1"      # toda segunda: roda também a regressão completa
+  release:
+    types: [published]
+
 jobs:
-  test:
+  # Suíte normal nas versões de Python que o pacote declara.
+  testes:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e . pytest openpyxl
+      - run: pytest tests/ -q
+
+  # As versões MÍNIMAS do pyproject.toml. Se o pacote promete
+  # "pandas>=2.0", isto prova que funciona com pandas 2.0.
+  versoes-minimas:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+      - run: >
+          pip install "shap==0.44.0" "pandas==2.0.0" "numpy==1.24.0"
+          "scipy==1.10.0" "scikit-learn==1.3.0" "matplotlib==3.7.0"
+          "pyyaml==6.0" pytest openpyxl
+      - run: pip install --no-deps -e .
+      - run: python tests/checa_fstring.py
+      - run: pytest tests/ -q
+
+  # Os 157 retreinos reais do ONS: nenhum pode ser BLOQUEADO. Demora ~40 min,
+  # então roda toda semana, antes de cada release e quando pedido — não a
+  # cada push. A amostra (~4 min) já roda no job "testes".
+  regressao-completa:
+    if: github.event_name != 'push' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install -e . scikit-learn scipy pytest
-      - run: pytest tests/ -q
+      - run: pip install -e . pytest openpyxl
+      - run: pytest tests/test_regressao_saudaveis.py -m slow -q

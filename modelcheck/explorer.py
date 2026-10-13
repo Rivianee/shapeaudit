@@ -17,7 +17,23 @@ Uso:
 import numpy as np
 import pandas as pd
 from typing import List, Optional
+import html as _html
 import json
+
+
+# BUG 56 (v1.0.4): nomes de variável, título, rótulos e regras entravam crus
+# no HTML (e os nomes, via innerHTML, no DOM); o JSON dentro de <script> não
+# escapava `</`; um rótulo com aspa simples quebrava o JS. Tudo que vem do
+# usuário passa por estas duas funções.
+def _e(x) -> str:
+    return _html.escape(str(x))
+
+
+def _js(x) -> str:
+    """Valor JSON seguro para embutir dentro de <script>."""
+    # `<` vira \u003c: cobre `</script>` e `<!--` (json.dumps já escapa
+    # U+2028/U+2029 com ensure_ascii)
+    return json.dumps(x).replace("<", "\\u003c")
 
 
 def _shap_profiles(model, X: pd.DataFrame,
@@ -84,7 +100,7 @@ class InteractiveDivergenceExplorer:
             shape_info = ""
             for d in divergences:
                 if d['feature'] == f:
-                    shape_info = f"{d['shape_v1']} → {d['shape_v2']}"
+                    shape_info = f"{d.get('shape_v1')} → {d.get('shape_v2')}"
             charts_data.append({
                 'feature': f,
                 'has_div': has_div,
@@ -114,9 +130,9 @@ class InteractiveDivergenceExplorer:
                 <div class='rule'>
                   <div class='rule-num'>[{i}]</div>
                   <div class='rule-body'>
-                    <code>{r['rule_text']}</code>
+                    <code>{_e(r.get('rule_text', ''))}</code>
                     <div class='rule-stats'>
-                      {r.get('n_real', 0)} amostras &nbsp;·&nbsp;
+                      {_e(r.get('n_real', 0))} amostras &nbsp;·&nbsp;
                       {pct}% divergentes &nbsp;·&nbsp;
                       div_média={div_m:.3f}
                     </div>
@@ -125,7 +141,10 @@ class InteractiveDivergenceExplorer:
             rules_html += "</div>"
 
         # Gera os gráficos como JSON para Plotly inline
-        charts_json = json.dumps(charts_data)
+        charts_json = _js(charts_data)
+        labels_json = _js([str(label_v1), str(label_v2)])
+        title, label_v1, label_v2 = _e(title), _e(label_v1), _e(label_v2)
+        score, status = _e(score), _e(status)
 
         html = f"""<!DOCTYPE html>
 <html lang="pt-BR">
@@ -193,10 +212,11 @@ footer{{margin-top:32px;font-size:.75rem;color:#606080;text-align:center}}
 <h3>📊 Perfis SHAP por Feature</h3>
 <div class="grid" id="grid"></div>
 
-<footer>ModelGuard · modelcheck · Apache 2.0</footer>
+<footer>ShapeAudit · modelcheck · MIT</footer>
 
 <script>
 const data = {charts_json};
+const labels = {labels_json};
 const grid = document.getElementById('grid');
 
 data.forEach((d, idx) => {{
@@ -204,22 +224,25 @@ data.forEach((d, idx) => {{
   div.className = 'card' + (d.has_div ? ' divergent' : '');
   const badgeClass = d.has_div ? 'div' : 'ok';
   const badgeText  = d.has_div ? '⚠ SHAPE_DIV ' + d.shape_info : '✅ stable';
-  div.innerHTML = `
-    <div class="card-title">
-      <span>${{d.feature}}</span>
-      <span class="badge ${{badgeClass}}">${{badgeText}}</span>
-    </div>
-    <div class="chart-wrap" id="chart-${{idx}}"></div>`;
+  // só textContent: o nome da variável vem dos dados (BUG 56)
+  const tit = document.createElement('div'); tit.className = 'card-title';
+  const nome = document.createElement('span'); nome.textContent = d.feature;
+  const badge = document.createElement('span');
+  badge.className = 'badge ' + badgeClass; badge.textContent = badgeText;
+  tit.appendChild(nome); tit.appendChild(badge);
+  const wrap = document.createElement('div'); wrap.className = 'chart-wrap';
+  wrap.id = 'chart-' + idx;
+  div.appendChild(tit); div.appendChild(wrap);
   grid.appendChild(div);
 
   const traces = [
     {{
-      x: d.x1, y: d.y1, name: '{label_v1}',
+      x: d.x1, y: d.y1, name: labels[0],
       mode: 'lines+markers', line: {{color:'#7C3AED',width:2}},
       marker: {{size:5}}, type:'scatter'
     }},
     {{
-      x: d.x2, y: d.y2, name: '{label_v2}',
+      x: d.x2, y: d.y2, name: labels[1],
       mode: 'lines+markers', line: {{color:'#10B981',width:2}},
       marker: {{size:5}}, type:'scatter'
     }}

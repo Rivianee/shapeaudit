@@ -44,16 +44,15 @@ def veredito(r, titulo):
         print(f"  {c('▍', cor)} {c('não verificado: ' + ', '.join(nao), DIM)}")
 
 def laudo(r, nome, n):
-    html = render({"verdict": r.verdict, "problem_type": getattr(r, "problem_type", ""),
-                   "root_cause_features": r.root_cause_features,
-                   "divergences": r.shape_divergences, "collapses": [],
-                   "n_eval": n, "representation": "shap",
-                   "not_evaluated": r.not_evaluated}, lang="pt")
+    # v1.0.4: montava um dicionário próprio e parcial (o padrão do bug 55) —
+    # o laudo dizia "não verificado" para uma checagem que rodou e não tinha
+    # a seção do model diff. Usa o laudo da própria biblioteca.
+    html = r.to_html("pt")
     open(nome, "w", encoding="utf-8").write(html)
     return nome
 
 # ── dados e modelos ──────────────────────────────────────────────────
-cabecalho("ModelGuard — auditoria entre duas versões")
+cabecalho("ShapeAudit — auditoria entre duas versões")
 # dados embutidos em demo_vinho.py (só o carregador, sem rodar a demo dele)
 _src = io.open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "demo_vinho.py"), encoding="utf-8").read()

@@ -109,8 +109,10 @@ def _perfis(model, X: pd.DataFrame, feature_names: List[str],
     if representation == "shap":
         try:
             import shap
-            s = shap.TreeExplainer(model).shap_values(Xe[feature_names])
-            s = np.asarray(s, dtype=float)
+            from modelcheck.frechet import como_array_shap
+            sv_full = como_array_shap(
+                shap.TreeExplainer(model).shap_values(Xe[feature_names]))
+            s = sv_full
             if s.ndim == 3:
                 s = s[:, :, 1] if s.shape[2] > 1 else s[:, :, 0]
             sv = s
@@ -133,7 +135,7 @@ def _perfis(model, X: pd.DataFrame, feature_names: List[str],
                 shapes[f], bins[f], imp[f] = None, [], 0.0
         tot = sum(imp.values()) or 1.0
         return (shapes, bins, {k: v / tot for k, v in imp.items()},
-                "ale", len(Xe))
+                "ale", len(Xe), {})
 
     shapes, bins, imp = {}, {}, {}
     for i, f in enumerate(feature_names):
@@ -149,7 +151,25 @@ def _perfis(model, X: pd.DataFrame, feature_names: List[str],
         bins[f] = [] if _m is None else [float(x) for x in _m]
         imp[f] = float(np.abs(sv[:, i]).mean())
     tot = sum(imp.values()) or 1.0
-    return shapes, bins, {k: v / tot for k, v in imp.items()}, "shap", len(Xe)
+    # BUG 93 (v1.0.4): o snapshot guardava só o NOME da forma e comparava
+    # pela troca de classe — o critério anterior à distância de Fréchet, que
+    # detectava 0% no Benchmark B. Agora guarda o perfil (média da
+    # atribuição por faixa) de cada classe, e o diff usa a mesma distância e
+    # o mesmo limiar do Guard.
+    from modelcheck.frechet import fatias_por_classe, perfil, importancia_media_abs
+    fat = fatias_por_classe(sv_full)
+    imp_all = importancia_media_abs(sv_full)
+    extra = {
+        "perfis": {f: [None if (p := perfil(Xe[f].to_numpy(), fa[:, i])) is None
+                       else [float(v) for v in p] for fa in fat]
+                   for i, f in enumerate(feature_names)},
+        "tipico": {f: [float(np.abs(fa[:, i]).mean()) for fa in fat]
+                   for i, f in enumerate(feature_names)},
+        "importance_abs": {f: float(imp_all[i]) for i, f in enumerate(feature_names)},
+    }
+    t2 = float(imp_all.sum()) or 1.0
+    return (shapes, bins, {f: float(imp_all[i]) / t2 for i, f in enumerate(feature_names)},
+            "shap", len(Xe), extra)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -176,7 +196,7 @@ def save(model, X: pd.DataFrame, path: str,
     X, feature_names = validate_inputs(model, model, X, feature_names,
                                        caller="snapshot.save")
 
-    shapes, bins, imp, metodo, n_eval = _perfis(
+    shapes, bins, imp, metodo, n_eval, extra = _perfis(
         model, X, feature_names, representation, n_sample)
 
     snap = {
@@ -190,9 +210,13 @@ def save(model, X: pd.DataFrame, path: str,
         "shapes": shapes,
         "bins": bins,
         "importance": imp,
+        **extra,
         "meta": {
             "representation": metodo,
             "n_eval": int(n_eval),
+            # o diff reamostra as MESMAS linhas; antes comparava amostra
+            # contra conjunto inteiro quando save usava n_sample
+            "n_sample": None if n_sample is None else int(n_sample),
             "eval_fingerprint": _hash_eval(X, feature_names),
             "model_class": type(model).__name__,
         },
@@ -309,7 +333,8 @@ def diff(snapshot_path: str, model, X: pd.DataFrame,
          monitored: Optional[List[str]] = None,
          tau: float = 0.30,
          min_rel_importance: float = 0.01,
-         strict_eval: bool = True) -> Dict[str, Any]:
+         strict_eval: bool = True,
+         limiar: Optional[float] = None) -> Dict[str, Any]:
     """
     Compara um modelo atual contra um snapshot gravado.
 
@@ -354,8 +379,9 @@ def diff(snapshot_path: str, model, X: pd.DataFrame,
     ressalvas = checar_comparabilidade(model, model, X, feature_names,
                                        caller="snapshot.diff")
 
-    shapes2, bins2, imp2, metodo2, n2 = _perfis(
-        model, X, feature_names, snap["meta"]["representation"], None)
+    shapes2, bins2, imp2, metodo2, n2, extra2 = _perfis(
+        model, X, feature_names, snap["meta"]["representation"],
+        snap["meta"].get("n_sample"))
 
     if metodo2 != snap["meta"]["representation"]:
         raise ValueError(
@@ -364,24 +390,72 @@ def diff(snapshot_path: str, model, X: pd.DataFrame,
             f"'{metodo2}'. Os valores não são comparáveis em escala "
             f"(LIMITATIONS.md, seção 5).")
 
+    from modelcheck import frechet as _fr
     shapes1, imp1 = snap["shapes"], snap["importance"]
-    divergencias, colapsos = [], []
+    divergencias, colapsos, lacunas_forma = [], [], []
+    p_ = max(len(feature_names), 1)
+    perfis1, perfis2 = snap.get("perfis"), extra2.get("perfis")
+    usa_frechet = bool(perfis1) and bool(perfis2)
+    piso_forma = _fr.piso_relevancia(p_, min_rel_importance)
+    lim = _fr.LIMIAR_PADRAO if limiar is None else float(limiar)
+    # colapso: mesma regra do detector de integridade (piso adaptativo do
+    # bug 37 + massa de ruído do bug 82). O teste de permutação entre
+    # árvores (bug 81) precisa do modelo antigo, que o snapshot não guarda.
+    piso_col = min(0.02, 1.0 / p_)
+    w = np.array([float(imp1.get(f, 0.0)) for f in feature_names])
+    teto_ruido = 0.0
+    n_eff = 1.0 / float((w ** 2).sum() + 1e-12)
+    if p_ >= 20 and n_eff < 0.25 * p_:
+        k = int(np.ceil(n_eff))
+        teto_ruido = 3.0 * float(np.sort(w)[:-k].max()) if k < p_ else 0.0
+    a1 = snap.get("importance_abs") or {}
+    a2 = extra2.get("importance_abs") or {}
     for f in feature_names:
         a, b = shapes1.get(f), shapes2.get(f)
         i1, i2 = float(imp1.get(f, 0.0)), float(imp2.get(f, 0.0))
-        if max(i1, i2) < min_rel_importance:
-            continue                       # perfil de variável irrelevante é ruído
-        if a and b and a != b:
+        if usa_frechet:
+            if max(i1, i2) >= piso_forma:
+                melhor = None
+                t1s, t2s = snap.get("tipico", {}).get(f) or [], extra2.get("tipico", {}).get(f) or []
+                for k_, (pa, pb) in enumerate(zip(perfis1.get(f) or [], perfis2.get(f) or [])):
+                    if pa is None or pb is None or len(pa) != len(pb):
+                        continue
+                    ta = t1s[k_] if k_ < len(t1s) else 0.0
+                    tb = t2s[k_] if k_ < len(t2s) else 0.0
+                    forma = lambda q, t: t > 1e-12 and np.ptp(q) / t >= _fr.RAZAO_MIN_EFEITO_PRINCIPAL
+                    if not (forma(pa, ta) or forma(pb, tb)):
+                        continue
+                    d = _fr.distancia(pa, pb)
+                    if melhor is None or d > melhor:
+                        melhor = d
+                if melhor is not None and melhor > lim:
+                    divergencias.append({"feature": f, "shape_before": a,
+                                         "shape_after": b,
+                                         "frechet": round(melhor, 3),
+                                         "limiar": lim})
+        elif max(i1, i2) >= min_rel_importance and a and b and a != b:
             spread = abs(i1 - i2) / max(i1, i2, 1e-12)
             if spread >= tau:
                 divergencias.append({"feature": f, "shape_before": a,
                                      "shape_after": b,
                                      "spread": round(spread, 3)})
-        if i1 >= 0.02 and i2 / max(i1, 1e-12) < 0.40:
+        r_rel = i2 / max(i1, 1e-12)
+        r_abs = (float(a2.get(f, 0.0)) / max(float(a1.get(f, 0.0)), 1e-12)
+                 if a1 and a2 else r_rel)
+        if (i1 >= piso_col and i1 >= teto_ruido
+                and r_rel < 0.40 and r_abs < 0.40):
             colapsos.append({"feature": f,
                              "importance_before": round(i1, 4),
                              "importance_after": round(i2, 4),
-                             "ratio": round(i2 / max(i1, 1e-12), 3)})
+                             "ratio": round(r_rel, 3)})
+    if not usa_frechet:
+        lacunas_forma.append({
+            "layer": "shape divergence",
+            "reason": ("snapshot gravado antes da 1.0.4 (sem perfis) ou "
+                       "modelo sem TreeSHAP: forma comparada só pela classe"),
+            "consequence": ("mudança de forma dentro da mesma classe não é "
+                            "vista; grave o snapshot de novo com a 1.0.4"),
+        })
 
     mon = list(monitored or [])
     mon_hits = [c["feature"] for c in colapsos if c["feature"] in mon]
@@ -389,7 +463,8 @@ def diff(snapshot_path: str, model, X: pd.DataFrame,
     if colapsos:
         tipo, verdict = "IMPORTANCE_COLLAPSE", "BLOQUEADO"
     elif divergencias:
-        tipo, verdict = "SHAPE_DIVERGENCE", "ATENCAO"
+        # mesmo veredito do Guard para mudança de forma (era ATENCAO aqui)
+        tipo, verdict = "SHAPE_DIVERGENCE", "REVISAR"
     else:
         tipo, verdict = "NONE", "APROVADO"
     if mon and mon_hits:
@@ -412,7 +487,7 @@ def diff(snapshot_path: str, model, X: pd.DataFrame,
         # v1.65: declarar o que esta comparacao NAO cobre. Um relatorio que
         # omite isto parece completo enquanto mede menos do que o leitor
         # supoe.
-        "not_evaluated": ressalvas + [
+        "not_evaluated": ressalvas + lacunas_forma + [
             {"layer": "train/serving consistency",
              "reason": "o snapshot nao guarda a distribuicao de treino",
              "consequence": ("inconsistencia de escala entre treino e "

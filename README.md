@@ -1,8 +1,5 @@
 # ShapeAudit
 
-[Veja a demonstração](https://rivianee.github.io/shapeaudit/demo/) · [Pacote no PyPI](https://pypi.org/project/shapeaudit/)
-
-
 **Seu modelo novo tem a mesma acurácia do antigo. Mas será que ele aprendeu a
 mesma coisa?**
 
@@ -42,9 +39,9 @@ from shapeaudit import Guard
 r = Guard().audit(modelo_antigo, modelo_novo, X_avaliacao, y_avaliacao,
                   X_train=dados_de_treino_do_modelo_novo)
 
-print(r.verdict)               # APROVADO | REVISAR | ATENCAO | BLOQUEADO
+print(r.verdict)               # APROVADO | REVISAR | ATENCAO | BLOQUEADO | INDETERMINADO
 print(r.root_cause_features)   # ['Contract']
-open('laudo.html', 'w').write(r.to_html())      # laudo para abrir no navegador
+open('laudo.html', 'w', encoding='utf-8').write(r.to_html())  # laudo para abrir no navegador
 ```
 
 `X_train` é o treino do **modelo novo**. É esse argumento que separa "a coluna
@@ -59,6 +56,7 @@ roda, mas avisa que não verificou isso.
 | **ATENÇÃO** | os dados chegam diferentes do treino, ou uma variável quase idêntica assumiu o lugar de outra | promova com monitoramento, recalibre |
 | **REVISAR** | com os mesmos dados, o modelo novo responde de outro jeito | olhe as curvas antes de promover |
 | **APROVADO** | nenhuma verificação encontrou mudança | pode promover |
+| **INDETERMINADO** | uma verificação principal não rodou (ex.: base de avaliação pequena demais, modelo sem suporte) | não promova com base nesta auditoria: veja a lacuna declarada no laudo |
 
 E um laudo HTML que responde, nesta ordem: o que aconteceu, o que mudou de
 peso e de comportamento, onde exatamente mudou, se isso muda decisões, por onde
@@ -66,11 +64,14 @@ começar a investigar, e **o que não foi verificado**.
 
 ## Experimentar em dois minutos
 
-- **No Colab**, sem instalar nada: abra `ShapeAudit_Colab.ipynb` e rode tudo.
-- **Com uma planilha sua**: `python demo_excel.py meus_dados.xlsx nome_do_alvo`
+Os arquivos abaixo estão no [repositório](https://github.com/Rivianee/shapeaudit),
+não no pacote do `pip` — baixe o repositório (ou só o arquivo) antes.
 
-Os dois terminam com o laudo aberto e um caso de pipeline quebrado, para você
-ver os dois extremos.
+- **No Colab**, sem instalar nada: abra `ShapeAudit_Colab.ipynb` e rode tudo.
+  Termina com o laudo e com um caso de pipeline quebrado.
+- **Com uma planilha sua**: `python demo_excel.py meus_dados.xlsx nome_do_alvo`
+  (sem argumentos usa `exemplo_churn.xlsx`). Audita um retreino da sua
+  planilha e grava `laudo_shapeaudit.html`.
 
 ## Três perguntas, três camadas
 
@@ -91,9 +92,16 @@ O limiar padrão veio de uma bancada sintética. Calibre com retreinos que você
 **teria promovido** — não precisa de rótulo nem de falha conhecida:
 
 ```python
+from shapeaudit import Guard
 from shapeaudit.frechet import calibrar_limiar
-print(calibrar_limiar([(modelo_jan, modelo_fev), ...], X_avaliacao)['limiar'])
+
+cal = calibrar_limiar([(modelo_jan, modelo_fev), ...], X_avaliacao)
+r = Guard(frechet_threshold=cal['limiar']).audit(producao, candidata, X_avaliacao, y)
 ```
+
+Em domínio com efeito por interação forte, calibrar não é opcional: com o
+limiar padrão, retreinos saudáveis pedem revisão quase sempre
+(`LIMITATIONS.md`, seção 7-quater).
 
 Medido: de 0,12 a 0,47 em seis conjuntos de dados, e o limiar de modelos de
 boosting é cinco a seis vezes o de florestas nos mesmos dados. Calibre por

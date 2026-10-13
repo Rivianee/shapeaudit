@@ -102,7 +102,14 @@ def ale_shape_profile(model,
         Xhi[feature] = bins[i + 1]
 
         # Efeito local médio do bin
-        delta = model.predict(Xhi.values) - model.predict(Xlo.values)
+        # BUG 84 (v1.0.4): chamava model.predict() direto — em classificador
+        # com 3+ classes, rótulo virava número e um par saudável saía
+        # APROVADO sem lacuna. Agora usa a mesma saída do ALE rápido, que
+        # falha de propósito com 3+ classes (vira lacuna declarada).
+        from modelcheck.ale_fast import _predict as _pred_ale
+        # .values: mantém o comportamento anterior com X sem os nomes do
+        # treino (numpy convertido) — passar o DataFrame quebrava o predict
+        delta = _pred_ale(model, Xhi.values) - _pred_ale(model, Xlo.values)
         ale_means.append(float(delta.mean()))
         centers.append((bins[i] + bins[i + 1]) / 2)
 

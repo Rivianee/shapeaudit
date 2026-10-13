@@ -8,9 +8,10 @@ Projetada para dois usos:
 
 CÓDIGOS DE SAÍDA
 ----------------
-    0   nenhum problema no nível exigido por --fail-on
+    0   nenhum problema no nível exigido por --fail-on (padrão: high)
     1   problema encontrado no nível exigido
-    2   erro de execução (arquivo ausente, modelos incompatíveis, etc.)
+    2   erro de execução, ou veredito INDETERMINADO (a auditoria não
+        conseguiu decidir)
 
 O código 2 é distinto do 1 de propósito: um pipeline deve tratar "o modelo
 tem problema" de forma diferente de "a auditoria não rodou". Confundir os
@@ -26,9 +27,22 @@ from typing import Any, Dict, List, Optional
 
 EXIT_OK, EXIT_FOUND, EXIT_ERROR = 0, 1, 2
 
-_SEV = {"APROVADO": 0, "ATENCAO": 1, "REVISAR": 2, "BLOQUEADO": 3,
-        "INDETERMINADO": 2}
+_SEV = {"APROVADO": 0, "ATENCAO": 1, "REVISAR": 2, "BLOQUEADO": 3}
 _NIVEL = {"none": 99, "low": 1, "medium": 2, "high": 3}
+
+
+def _codigo(verdict, fail_on) -> int:
+    """
+    Uma regra só para o código de saída (BUG 85, v1.0.4).
+
+    A CLI tinha a sua tabela e a API (`pipeline.exit_code`) outra. Na CLI,
+    INDETERMINADO valia 2 e, com --fail-on high, uma auditoria que NÃO
+    CONSEGUIU decidir saía 0 — igual a aprovado. INDETERMINADO é sempre o
+    código 2: a auditoria não rodou o suficiente para responder.
+    """
+    if verdict not in _SEV:
+        return EXIT_ERROR
+    return EXIT_FOUND if _SEV[verdict] >= _NIVEL.get(fail_on, 99) else EXIT_OK
 
 
 # ── apresentação ──────────────────────────────────────────────────────
@@ -63,7 +77,8 @@ def _texto(res: Dict[str, Any]) -> str:
                       "grey"))
 
     div = res.get("divergences") or []
-    outras = [d["feature"] for d in div if d["feature"] not in raiz]
+    outras = [str(d.get("feature")) for d in div
+              if d.get("feature") not in raiz]
     if outras:
         L.append("")
         L.append("  Mudaram de padrao: " + ", ".join(outras[:6]) +
@@ -79,7 +94,8 @@ def _texto(res: Dict[str, Any]) -> str:
         L.append("")
         L.append(_cor("  nao verificado nesta auditoria:", "yellow"))
         for it in ne:
-            L.append(_cor(f"    - {it['layer']}: {it['reason']}", "grey"))
+            L.append(_cor(f"    - {it.get('layer')}: {it.get('reason')}",
+                          "grey"))
         L.append(_cor("    (o veredito acima nao cobre estes pontos)", "grey"))
 
     L.append(_cor(f"  {res.get('n_eval','?')} amostras - "
@@ -162,7 +178,8 @@ margin:20px 0;font-size:14px}}
 
 
 def _emitir(res: Dict[str, Any], formato: str, saida: Optional[str]) -> None:
-    txt = {"json": lambda: json.dumps(res, indent=2, ensure_ascii=False),
+    txt = {"json": lambda: json.dumps(res, indent=2, ensure_ascii=False,
+                                      default=str),
            "html": lambda: _html(res),
            "text": lambda: _texto(res)}[formato]()
     if saida:
@@ -171,7 +188,22 @@ def _emitir(res: Dict[str, Any], formato: str, saida: Optional[str]) -> None:
         if formato != "json":
             print(_cor(f"relatorio salvo em {saida}", "grey"))
     else:
+        _stdout_utf8()
         print(txt)
+
+
+def _stdout_utf8() -> None:
+    """
+    BUG 57 (v1.0.4): no Windows, com a saída redirecionada, o stdout usa
+    cp1252 e o laudo (✓, →, —) derrubava a CLI com UnicodeEncodeError.
+    """
+    rec = getattr(sys.stdout, "reconfigure", None)
+    if rec is None:
+        return
+    try:
+        rec(encoding="utf-8")
+    except Exception:
+        pass                      # noqa: lacuna-nao-aplicavel — stream sem suporte
 
 
 # ── carregamento ──────────────────────────────────────────────────────
@@ -233,8 +265,7 @@ def _cmd_diff(a) -> int:
     res = snapshot.diff(a.against, m, X, monitored=mon,
                         strict_eval=not a.allow_different_eval)
     _emitir(res, a.format, a.output)
-    return EXIT_FOUND if _SEV.get(res["verdict"], 0) >= \
-        _NIVEL.get(a.fail_on, 99) else EXIT_OK
+    return _codigo(res["verdict"], a.fail_on)
 
 
 def _cmd_compare(a) -> int:
@@ -243,21 +274,66 @@ def _cmd_compare(a) -> int:
     X, y = _carregar_dados(a.data, a.sep, a.target)
     m1, m2 = _carregar_modelo(a.model_a), _carregar_modelo(a.model_b)
     mon = [s.strip() for s in a.monitor.split(",")] if a.monitor else None
-    r = Guard().audit(m1, m2, X, y, list(X.columns))
-    res = {"verdict": r.verdict, "problem_type": r.problem_type,
-           "root_cause_features": r.root_cause_features,
-           "divergences": [{"feature": d["feature"],
-                            "shape_before": d.get("shape_v1"),
-                            "shape_after": d.get("shape_v2"),
-                            "spread": d.get("spread")}
-                           for d in r.raw.get("layer1", {})
-                           .get("sdd", {}).get("divs", [])],
-           "collapses": [], "n_eval": len(X),
-           "representation": "shap", "monitored": mon,
-           "not_evaluated": r.not_evaluated}
+    Xt = None
+    if getattr(a, "train", None):
+        Xt, _ = _carregar_dados(a.train, a.sep, a.target)
+        Xt = Xt[[c for c in X.columns if c in Xt.columns]]
+    g = Guard(mode=getattr(a, "mode", "retraining"))
+    r = g.audit(m1, m2, X, y, list(X.columns), X_train=Xt)
+    res = _dict_do_resultado(r, n_eval=len(X))
+    res["monitored"] = mon
+    # BUG 86 (v1.0.4): --monitor em `compare` era só copiado para a saída,
+    # sem efeito nenhum. Agora roda a checagem dirigida (a de maior
+    # especificidade) e, se uma variável monitorada colapsou, o resultado
+    # vira BLOQUEADO mesmo que a auditoria geral não tenha bloqueado.
+    if mon:
+        c = g.check_features(m1, m2, X, monitored=mon)
+        res["monitored_hits"] = c["collapsed"]
+        if c["collapsed"] and res.get("verdict") != "BLOQUEADO":
+            res["verdict"] = "BLOQUEADO"
+            res["verdict_driver"] = "monitored_feature"
+            res["root_cause_features"] = list(dict.fromkeys(
+                list(res.get("root_cause_features") or []) + c["collapsed"]))
     _emitir(res, a.format, a.output)
-    return EXIT_FOUND if _SEV.get(r.verdict, 0) >= \
-        _NIVEL.get(a.fail_on, 99) else EXIT_OK
+    return _codigo(res["verdict"], a.fail_on)
+
+
+def _dict_do_resultado(r, n_eval=None) -> Dict[str, Any]:
+    """
+    BUG 55 (v1.0.4): `compare --format html` montava um dicionário próprio,
+    parcial — sem clones, reaprendizado, `skew_status` nem model diff — e
+    com `representation='shap'` fixo. Um caso ATENCAO por substituição de
+    variável saía com "✓ nenhuma substituição". Agora usamos o mesmo
+    dicionário que `AuditResult.to_html` entrega ao laudo.
+    """
+    from modelcheck.laudo import _idioma
+    if hasattr(r, "to_dict"):
+        res = dict(r.to_dict(_idioma("auto")))
+    else:
+        raw = getattr(r, "raw", {}) or {}
+        sdd = (raw.get("layer1", {}) or {}).get("sdd", {}) or {}
+        res = {
+            "verdict": r.verdict,
+            "problem_type": getattr(r, "problem_type", "") or "",
+            "root_cause_features": r.root_cause_features,
+            "divergences": getattr(r, "shape_divergences", None)
+            or sdd.get("divs", []),
+            "collapses": [],
+            "model_diff": getattr(r, "model_diff", []),
+            "skew_features": getattr(r, "skew_features", []),
+            "skew_status": getattr(r, "skew_status", "ausente"),
+            "skew_error": getattr(r, "skew_error", ""),
+            "clone_redistribution": getattr(r, "clone_redistribution", {}),
+            "relearning": list(getattr(r, "relearning", []) or []),
+            "decisao": {},
+            "n_eval": (len(raw.get("X_eval_ref"))
+                       if raw.get("X_eval_ref") is not None else "—"),
+            "representation": sdd.get("method", "shap"),
+            "not_evaluated": r.not_evaluated,
+        }
+    if n_eval is not None and res.get("n_eval") in (None, "—"):
+        res["n_eval"] = n_eval
+    return res
 
 
 def _cmd_check(a) -> int:
@@ -281,8 +357,7 @@ def _cmd_check(a) -> int:
                 "reason": "nao executada no modo `check`",
                 "consequence": "skew de dados nao foi verificado"}]}
     _emitir(res, a.format, a.output)
-    return EXIT_FOUND if c["alert"] and _NIVEL.get(a.fail_on, 99) <= 3 \
-        else EXIT_OK
+    return _codigo("BLOQUEADO" if c["alert"] else "APROVADO", a.fail_on)
 
 
 # ── parser ────────────────────────────────────────────────────────────
@@ -292,16 +367,21 @@ def _add_comuns(sp):
     sp.add_argument("--format", choices=["text", "json", "html"],
                     default="text")
     sp.add_argument("-o", "--output", default=None, help="output file")
+    # BUG 85: o padrão era "none" — um BLOQUEADO saía com código 0 e o CI
+    # deixava passar o modelo quebrado. Padrão agora: "high" (BLOQUEADO
+    # falha o job). "none" continua disponível para quem só quer o laudo.
     sp.add_argument("--fail-on", choices=["none", "low", "medium", "high"],
-                    default="none",
-                    help="exit 1 from this severity upwards")
+                    default="high",
+                    help="exit 1 from this severity upwards (default: high = "
+                         "BLOQUEADO). low=ATENCAO+, medium=REVISAR+, none=never. "
+                         "INDETERMINADO always exits 2")
     sp.add_argument("--monitor", default=None,
                     help="critical features, comma-separated")
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="modelcheck",
+        prog="shapeaudit",
         description="Audit what changed between two versions of a model.",
         epilog="exit codes: 0 clean | 1 problem found | 2 execution error")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -339,6 +419,14 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("model_a")
     c.add_argument("model_b")
     c.add_argument("data")
+    # BUG 91 (v1.0.4): sem como passar os dados de treino, a camada treino ×
+    # uso nunca rodava pela CLI — o mesmo par dava ATENCAO pela API e
+    # APROVADO pela CLI.
+    c.add_argument("--train", default=None,
+                   help="training data of model_b (CSV, same columns); enables "
+                        "the train/serving layer")
+    c.add_argument("--mode", choices=["retraining", "exploratory"],
+                   default="retraining")
     _add_comuns(c)
     c.set_defaults(func=_cmd_compare)
 

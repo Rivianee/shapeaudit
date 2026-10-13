@@ -31,8 +31,10 @@ except Exception:                       # rodando do repositório, sem instalar
 # submódulos acessíveis por `modelguard.snapshot`, `from modelguard.laudo
 # import render`, etc. — sem isto, só o atributo funcionaria, e o import
 # direto falharia.
+# BUG 63 (v1.0.4): faltava `frechet`, que `shapeaudit` expõe —
+# `import modelguard.frechet` falhava. A lista espelha a de shapeaudit.
 for _nome in ("snapshot", "laudo", "pipeline", "cli", "audit", "shape",
-              "importance", "validation", "fairness"):
+              "frechet", "importance", "validation", "fairness"):
     try:
         _sub = __import__(f"modelcheck.{_nome}", fromlist=[_nome])
         _sys.modules[f"modelguard.{_nome}"] = _sub

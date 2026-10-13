@@ -14,6 +14,11 @@
 > | limiar da distância | 0,12 a 0,47 em seis domínios; calibre com `calibrar_limiar` |
 > | prevalência em retreino real | 5% (afluência) a 41% (carga) em 161 retreinos do ONS |
 > | sazonalidade | continua indistinguível de deriva |
+> | janela de avaliação | muda o veredito quando a correlação entre duas variáveis fica perto de 0,95 (ver 7-bis) |
+> | protocolo de avaliação | em série temporal o veredito agregado satura em ATENÇÃO: 46 de 51 (avaliação futura) e 52 de 59 (avaliação sobre o histórico) — ver 7-ter |
+> | efeito por interação | limiar padrão dá REVISAR em 6/6 retreinos saudáveis; calibrado, 2/6 (ver 7-quater) |
+> | multiclasse fora de árvores | camada de forma não roda (lacuna declarada) |
+> | muitas variáveis (200+) | BLOQUEADO falso corrigido na 1.0.4; colapso de variável fraca (< 2%) em floresta de 10-30 árvores pode não ser confirmado (ver 7-sexies) |
 > | usuário externo | **nenhum ainda** |
 >
 > As seções abaixo foram escritas para versões anteriores e descrevem o
@@ -228,6 +233,230 @@ abaixo do padrão 0.40, gerando falso positivo. Use
 **Análise causal:** requer `min_rel_importance ≥ 0.02`. Sem o filtro, uma
 feature de ruído (0.08% da importância) foi apontada como causa com confiança
 **0.62–0.92** em controle sem efeito nenhum.
+
+---
+
+## 7-bis. O veredito depende do conjunto de avaliação (v1.0.2)
+
+**O que acontece.** A camada de forma distingue dois casos: uma variável
+perdeu influência **e a informação se perdeu** (bloqueia) ou perdeu
+influência **para uma variável equivalente que assumiu o papel**
+(`ATENCAO`, com a substituição reportada). A regra que separa os dois usa
+correlação absoluta ≥ 0,95 — e essa correlação é **medida no conjunto de
+avaliação passado para `audit()`**, não nos dados de treino dos modelos.
+
+Consequência: quando duas variáveis andam perto do limite, janelas
+diferentes caem de lados diferentes da linha, e o veredito muda sem que os
+modelos tenham mudado.
+
+**Caso medido.** Dados mensais do ONS (CMO/SE, 246 meses). Floresta
+aleatória treinada em 2012–2020; a candidata é a mesma floresta treinada
+com `ear_lag1` constante.
+
+| janela de avaliação | corr(`ear_lag1`, `ear_min`) | veredito |
+|---|---|---|
+| 2012–2022 | 0,944 | `BLOQUEADO` — causa `ear_lag1` |
+| 2012–2026 | 0,960 | `ATENCAO` — substituição `ear_lag1 → ear_min` |
+
+Os dois resultados são corretos pela regra. O que muda é o fato empírico:
+nos anos recentes as duas séries de reservatório andam mais juntas, então a
+informação de fato não se perde.
+
+**Quanto isso é comum.** Varredura de 6 janelas × 5 variáveis quebradas no
+mesmo conjunto: **1 de 5** variáveis trocou de veredito entre janelas
+(`ear_lag1`); as outras quatro (`ear`, `ear_min`, `cmo_lag1`, `mes`) deram
+o mesmo veredito nas seis janelas.
+
+**O que fazer.**
+
+1. Rode a auditoria na janela em que o modelo foi treinado — é a janela em
+   que as correlações que o modelo aprendeu valem.
+2. Registre a janela junto com o veredito. Um veredito sem a janela não é
+   reproduzível.
+3. Se a correlação da variável apontada com qualquer outra estiver entre
+   0,90 e 0,97, confira em mais de uma janela antes de decidir. Nessa faixa
+   o veredito é frágil por construção.
+
+**O que não corrige isso.** Mover o limiar de 0,95 só muda onde fica a
+fronteira; não existe valor que elimine a faixa de fragilidade. Calcular a
+correlação nos dados de treino em vez de avaliação tornaria o veredito
+estável, mas erraria no caso oposto — uma variável que *deixou* de ser
+redundante seria tratada como clone. Fica como limite declarado.
+
+---
+
+## 7-ter. O protocolo de avaliação (v1.0.2) — erro corrigido e limite novo
+
+### O erro
+
+Até esta versão, três experimentos avaliavam os modelos em conjuntos que
+**continham os dados de treino**:
+
+| experimento | treino | avaliação | sobreposição |
+|---|---|---|---|
+| `cenario_pipeline.py` (CMO mensal) | 2012–2020 | 2012–2022 | avaliação contém o treino |
+| `prevalencia.py` (ENA diária) | janelas de 24 meses | `d.sample(400)` do período todo | em toda janela |
+| `prevalencia_carga.py` | idem | idem | em toda janela |
+
+Floresta aleatória decora o treino, então o R² medido assim é inflado nos
+dois modelos. Medido de novo com corte cronológico:
+
+| caso | R² sobreposto | R² fora da amostra |
+|---|---|---|
+| CMO mensal, treino 2012–2020 | 0,696 | **0,399** |
+| ENA diária (mediana de 51 janelas) | — | 0,989 |
+
+No CMO a inflação é de 30 pontos. No ENA diária é desprezível, porque os
+lags quase determinam a série.
+
+### O que sobreviveu
+
+As duas afirmações centrais não eram artefato da sobreposição:
+
+| afirmação | sobreposto | avaliação limpa |
+|---|---|---|
+| ΔR² da falha de pipeline (CMO) | 0,0032 | **0,0017** (menor) |
+| bloqueios falsos em retreino real | 0 / 161 | **0 / 51** |
+| prevalência de divergência de forma | 5% | **6%** |
+
+O ΔR² **diminui** com dado limpo: a memorização ajudava os dois modelos por
+igual e, se algo, exagerava a diferença. O argumento "a métrica não vê"
+fica mais forte, não mais fraco.
+
+### O limite novo
+
+Protocolo limpo = avaliar em dados **estritamente posteriores** à janela de
+treino. Nesse protocolo, a camada treino/serving dispara em **48 de 51**
+retreinos saudáveis (94%) na 1.0.3 e em **46 de 51** (90%) na 1.0.4.
+
+**Atualização 1.0.4 — o protocolo publicado também satura.** O protocolo
+dos 161 retreinos avalia numa amostra do histórico inteiro, com o modelo
+treinado numa janela de 2 anos. Ali também treino e avaliação diferem por
+construção. Até a 1.0.3 isso ficava escondido: `pipeline.combinar` (bug 76)
+descartava o ATENÇÃO que o próprio Guard emitia. Refeito na 1.0.4:
+
+| protocolo publicado | APROVADO | ATENÇÃO | REVISAR | BLOQUEADO |
+|---|---|---|---|---|
+| ENA SE, 1.0.3 (com o bug; 59 linhas, 55 distintas) | 46 | 13 | 0 | 0 |
+| ENA SE, 1.0.4 | 5 | 52 | 2 | **0** |
+| carga SE, 1.0.3 (com o bug; 54 linhas, 51 distintas) | 27 | 10 | 17 | 0 |
+| carga SE, 1.0.4 | 0 | 36 | 18 | **0** |
+
+O que se mantém: **zero BLOQUEADO falso** em 157 retreinos saudáveis
+distintos (55 + 51 + 51; os "59" e "54" antigos contavam duas vezes a
+janela da fronteira entre lotes do script), a prevalência de divergência de forma (6% no protocolo
+limpo) e o Benchmark A (100% de detecção, causa exata, zero falso
+BLOQUEADO nos controles). O que não se mantém: a fração de APROVADO no
+protocolo publicado vinha do bug.
+
+Isso **não é falso positivo**: dado futuro está deslocado em relação ao
+treino, e a camada está reportando um fato. Mas a consequência prática é
+que, nesse protocolo, `ATENCAO` não discrimina nada — e afoga o sinal de
+forma, que aparece em 6% dos casos.
+
+**O que fazer.** Em série temporal, separe as duas perguntas:
+
+1. *Os dados mudaram?* — sempre vão ter mudado. Olhe a magnitude, não o
+   alerta.
+2. *O modelo mudou de forma?* — leia `shape_divergences` e
+   `root_cause_features` direto, sem passar pelo veredito agregado.
+
+O veredito de três camadas foi desenhado para retreino sobre a mesma
+distribuição. Em série temporal com avaliação futura ele satura na camada
+do meio. Fica como limite declarado.
+
+---
+
+## 7-quater. Domínios com efeito por interação (v1.0.4)
+
+**O que acontece.** A camada de forma compara a curva média da atribuição
+de cada variável. Quando o efeito de uma variável vem de interação
+(`y = 3·x1·x2`), essa curva não tem forma verdadeira — mas uma floresta
+pequena aprende um efeito principal espúrio em `x1`, e cada semente aprende
+um diferente. A normalização da distância de Fréchet põe esse desenho
+espúrio na mesma escala de um sinal real.
+
+**Medido** (n=800, floresta de 30 árvores, profundidade 6, pares que só
+diferem na semente):
+
+| limiar | retreinos saudáveis com REVISAR | mudança real (x3 linear → U) |
+|---|---|---|
+| padrão 0,33 | **6 de 6** | detectada (3,18) |
+| calibrado no domínio (1,95) | 2 de 6 | detectada (3,18) |
+
+O ruído entre sementes chega a ~2,0 e o sinal real a ~3,2. A margem é
+estreita: calibrar ajuda, mas não resolve.
+
+**O que fazer.**
+
+1. Em domínio com interação forte, **calibre sempre**:
+   ```python
+   from shapeaudit.frechet import calibrar_limiar
+   cal = calibrar_limiar(pares_saudaveis, X_eval)
+   Guard(frechet_threshold=cal["limiar"]).audit(...)
+   ```
+   Até a 1.0.3 isso não era possível pelo `Guard`: o parâmetro `threshold`
+   não chegava à camada de forma (BUG 80). Agora o nome certo é
+   `frechet_threshold`.
+2. Leia REVISAR nesses domínios como "olhe a curva no laudo", não como
+   "algo quebrou". As camadas de integridade (BLOQUEADO) e treino × uso
+   (ATENCAO) não dependem dessa curva e não são afetadas.
+3. Quando a curva média é plana nas duas versões, a variável não é
+   comparada e aparece no laudo como lacuna ("interaction-only features").
+   Isso só pega o caso extremo; o espúrio acima não é plano.
+
+**Por que não mudamos a métrica.** Trocar a normalização mudaria todos os
+números validados (161 retreinos do ONS, as duas bancadas). Fica como
+limite declarado até haver uma alternativa medida nas mesmas bancadas.
+
+## 7-quinquies. Multiclasse e o detector PSI-SHAP (v1.0.4)
+
+- **Multiclasse com árvores:** desde a 1.0.4 cada classe é comparada (antes
+  só a classe 1 — uma variável que separa as classes 0 e 2 passava
+  invisível). Com 3+ classes **fora de árvores**, a curva ALE não tem
+  definição única; a camada de forma falha de propósito e vira lacuna, e o
+  veredito é INDETERMINADO se nada mais for encontrado.
+- **`PSIShapDetector`** compara só a distribuição marginal das atribuições.
+  Uma inversão de sinal numa variável simétrica (+x → −x) deixa a marginal
+  igual e passa (PSI 0,053, nível OK). Ele está fora do veredito; a camada
+  de forma, que decide, pega a inversão.
+
+---
+
+## 7-sexies. Alta dimensão: o falso BLOQUEADO e o que ficou (v1.0.4)
+
+**O erro (até 1.0.3).** Com muitas variáveis e sinal concentrado em poucas,
+as de ruído ganham pesos minúsculos que oscilam entre sementes: 0,8% → 0,2%
+parece colapso. O piso adaptativo do bug 37 (1/p) deixava essas variáveis
+entrarem. Medido em retreinos **saudáveis** (só a semente muda), p=200:
+
+| modelo | BLOQUEADO falso na 1.0.3 | na 1.0.4 |
+|---|---|---|
+| floresta, 10-20 árvores | 4 de 4 | 0 de 4 |
+| floresta, 100 árvores | 2 de 4 | 0 de 4 |
+| boosting estocástico (subsample 0,8) | 3 de 3 | 0 de 3 |
+
+Até p=120 com 50+ árvores não havia falso bloqueio; o erro aparece com
+muitas variáveis e/ou poucas árvores.
+
+**A correção.**
+- *Floresta (RandomForest, ExtraTrees):* cada árvore é uma réplica do
+  treino. Teste de permutação entre as árvores das duas versões: colapso
+  só é confirmado com escore z ≥ 6 contra a distribuição nula. Em 810
+  variáveis de ruído o z máximo foi 4,9; colapso real forte, 17 a 42.
+- *Outros modelos (boosting):* quando o peso está concentrado (número
+  efetivo de variáveis < p/4), uma variável só colapsa se antes pesava mais
+  de 3× o máximo da cauda de ruído. Medido: ruído chega a 2,3×; variável
+  real fraca começa em 4,5×.
+
+**O que ficou.**
+- Colapso de variável **real mas fraca** (peso < ~2%) numa floresta de 10 a
+  30 árvores com 200+ variáveis pode não ser confirmado (z entre 2 e 5).
+  Com 100 árvores foi confirmado em todos os casos medidos.
+- Nesses mesmos cenários a camada de forma pede REVISAR em retreinos
+  saudáveis (variáveis de ruído acima do piso de forma). Não bloqueia; é o
+  mesmo remédio da 7-quater: calibre com `calibrar_limiar` e passe em
+  `Guard(frechet_threshold=...)`.
 
 ---
 

@@ -68,3 +68,16 @@ def make_pair(X, y, corrupt=None, kind='neutralize', seed2=0, clf=False):
                                   else ytr.max() + ytr.min() - yc.loc[Xtr[msk].index])
     m2 = M(0).fit(Xc, yc)
     return m1, m2, Xte, yte, tgt
+
+
+def pytest_collection_modifyitems(config, items):
+    """
+    `pytest.ini` dizia "rodar com -m slow", mas nada excluía os lentos: eles
+    rodavam sempre (v1.0.4). Agora só rodam quando pedidos com `-m slow`.
+    """
+    if "slow" in (config.getoption("-m") or ""):
+        return
+    pula = pytest.mark.skip(reason="lento: rode com  pytest -m slow")
+    for item in items:
+        if "slow" in item.keywords:
+            item.add_marker(pula)

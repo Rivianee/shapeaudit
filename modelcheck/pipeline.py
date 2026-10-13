@@ -91,7 +91,11 @@ def combinar(audit_result,
     # (integridade). Mudança só de forma não é falha de pipeline: vira
     # SHAPE_CHANGE (REVISAR) quando os dados não mudaram.
     modelo_mudou = bool(getattr(audit_result, "root_cause_features", None))
-    forma_mudou = bool(getattr(audit_result, "shape_divergences", None))
+    # BUG 92 (v1.0.4): no modo exploratório o Guard trata mudança de forma
+    # como esperada (APROVADO), mas esta matriz a subia para REVISAR — o
+    # mesmo resultado dava vereditos diferentes conforme o caminho.
+    forma_mudou = (bool(getattr(audit_result, "shape_divergences", None))
+                   and getattr(audit_result, "mode", "") != "exploratory")
 
     lacunas = list(getattr(audit_result, "not_evaluated", []) or [])
     # v0.9.1: fairness por grupo ao longo do tempo (fairness_evolucao).
@@ -147,6 +151,17 @@ def combinar(audit_result,
         leitura = ("Com os mesmos dados, o modelo novo reage de forma "
                    "diferente a uma ou mais variáveis. Revise antes de "
                    "promover.")
+    # BUG 76 (v1.0.4): a matriz só olhava causa raiz, clones e forma. Um
+    # ATENCAO do próprio Guard (treino × uso), um REVISAR por reaprendizado,
+    # um BLOQUEADO por colapso do modelo ou um INDETERMINADO viravam
+    # APROVADO aqui. A combinação nunca pode ser mais branda que o veredito
+    # do Guard: ela acrescenta o sinal externo, não apaga o interno.
+    v_guard = getattr(audit_result, "verdict", None)
+    if v_guard and _SEV_COMB.get(v_guard, 0) > _SEV_COMB.get(verdict, 0):
+        verdict = v_guard
+        tipo = tipo if tipo != "HEALTHY" else (
+            getattr(audit_result, "verdict_driver", "") or "GUARD").upper()
+        leitura = str(getattr(audit_result, "action", "") or leitura)
     grupos_piores = []
     if fairness and fairness.get("status") == "PIOROU":
         grupos_piores = fairness.get("pioras", [])
@@ -172,16 +187,32 @@ def combinar(audit_result,
     }
 
 
+# ordem de gravidade para combinar vereditos (INDETERMINADO não aprova)
+_SEV_COMB = {"APROVADO": 0, "ATENCAO": 1, "REVISAR": 2,
+             "INDETERMINADO": 3, "BLOQUEADO": 4}
+
+
 def exit_code(resultado: Dict[str, Any], fail_on: str = "high") -> int:
     """
     Código de saída para CI, com a mesma convenção da CLI:
     0 limpo, 1 problema encontrado, 2 erro.
+
+    BUG 77 (v1.0.4): INDETERMINADO devolvia 0 (passava no CI) e um `fail_on`
+    desconhecido, como 'HIGH', virava 99 e desligava a falha. Agora
+    INDETERMINADO é sempre 2 (a auditoria não conseguiu decidir), o nível
+    ignora maiúsculas, e valor inválido é erro.
     """
-    sev = {"APROVADO": 0, "ATENCAO": 1, "REVISAR": 2, "BLOQUEADO": 3,
-           "INDETERMINADO": 2}
+    v = resultado.get("verdict")
+    if v == "INDETERMINADO" or v is None:
+        return 2
+    sev = {"APROVADO": 0, "ATENCAO": 1, "REVISAR": 2, "BLOQUEADO": 3}
     nivel = {"none": 99, "low": 1, "medium": 2, "high": 3}
-    return 1 if sev.get(resultado.get("verdict"), 0) >= \
-        nivel.get(fail_on, 99) else 0
+    chave = str(fail_on).strip().lower()
+    if chave not in nivel:
+        raise ValueError(f"fail_on deve ser um de {sorted(nivel)}; veio {fail_on!r}")
+    if v not in sev:
+        return 2
+    return 1 if sev[v] >= nivel[chave] else 0
 
 
 def fairlearn_disparity(y_true, y_pred, sensitive_features,

@@ -163,9 +163,20 @@ def test_cli_exit_2_em_erro_de_execucao(cli_env):
     assert 'Traceback' not in r.stderr, "erro previsto não deve vazar stack trace"
 
 
-def test_cli_sem_fail_on_nao_quebra_o_pipeline(cli_env):
-    """Sem --fail-on, reporta mas não falha: útil em modo observação."""
+def test_cli_sem_fail_on_falha_em_bloqueado(cli_env):
+    """
+    BUG 85 (v1.0.4): o padrão era não falhar nunca. A documentação promete
+    "0 limpo, 1 problema", e num CI o padrão antigo deixava passar modelo
+    BLOQUEADO. Padrão agora: --fail-on high.
+    """
     r = _cli(['diff', 'v2.pkl', 'eval.csv', '--against', 's.json'], cli_env)
+    assert r.returncode == 1
+
+
+def test_cli_modo_observacao_e_explicito(cli_env):
+    """Reportar sem falhar continua possível, mas tem de ser pedido."""
+    r = _cli(['diff', 'v2.pkl', 'eval.csv', '--against', 's.json',
+              '--fail-on', 'none'], cli_env)
     assert r.returncode == 0
 
 

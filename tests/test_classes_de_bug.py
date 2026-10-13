@@ -216,8 +216,13 @@ def test_nenhuma_fstring_quebrada_em_varias_linhas():
     """
     Quebrar uma expressão dentro de f-string em duas linhas só é válido a
     partir do 3.12 (PEP 701). O pacote declara suportar 3.9+, e uma usuária
-    no 3.11 recebeu SyntaxError ao importar. O erro não aparece aqui porque
-    o container roda 3.12 — por isso o teste inspeciona o código.
+    no 3.11 recebeu SyntaxError ao importar.
+
+    O detector tem dois caminhos (ver `checa_fstring`): em Python < 3.12 ele
+    compila cada arquivo, porque ali a sintaxe é erro de fato; em 3.12+ ele
+    tokeniza, porque ali compila sem reclamar. Rodar este teste na versão
+    mais antiga que o pacote declara suportar é o que dá a garantia real —
+    em 3.12+ a checagem é indicador, não prova.
     """
     import glob
     import os
@@ -228,9 +233,9 @@ def test_nenhuma_fstring_quebrada_em_varias_linhas():
     ruins = []
     for pasta in ('modelcheck', 'shapeaudit', 'modelguard'):
         for f in glob.glob(os.path.join(raiz, pasta, '*.py')):
-            for ini, fim in problemas(f):
-                ruins.append(f'{os.path.basename(f)}:{ini}')
-    assert not ruins, f'f-string multilinha (quebra em Python < 3.12): {ruins}'
+            for ini, _fim, motivo in problemas(f):
+                ruins.append(f'{os.path.basename(f)}:{ini} {motivo}')
+    assert not ruins, f'sintaxe invalida em Python < 3.12: {ruins}'
 
 
 # ═══ BUG 39: binária rara virava "mudança de escala" ═════════════════
@@ -270,3 +275,93 @@ def test_nivel_novo_na_inferencia_alarma():
     tr = pd.DataFrame({'b': a * 3})
     sv = pd.DataFrame({'b': (r.rand(600) < .02).astype(float)})
     assert 'b' in TrainServingValidator().check(tr, sv, ['b'])['flagged']
+
+
+# ═══ BUG 40: coluna constante virava número complexo ════════════════
+def test_coluna_binaria_virando_constante_fora_de_escala():
+    """
+    O teste de proporção da binária rara era aplicado a qualquer coluna de
+    dois níveis, mesmo quando os valores não eram uma codificação 0/1. Uma
+    coluna {0,1} que passa a chegar constante em 3.0 fazia `pool` sair de
+    [0,1]; `pool * (1 - pool)` ficava negativo e a raiz devolvia um COMPLEXO,
+    derrubando a checagem treino × uso com
+
+        TypeError: '>' not supported between 'complex' and 'float'
+
+    Era o pior lugar possível para quebrar: coluna constante é exatamente o
+    sintoma de pipeline quebrado que a checagem existe para pegar.
+    """
+    import numpy as np
+    import pandas as pd
+    from modelcheck.validation import TrainServingValidator
+
+    rng = np.random.default_rng(0)
+    n = 1000
+    fe = ['a', 'flag']
+    treino = pd.DataFrame({'a': rng.normal(0, 1, n),
+                           'flag': (rng.random(n) < 0.02).astype(float)})
+
+    # fora de [0,1]: é recodificação, não mudança de taxa
+    for valor in (3.0, 6.5, -1.0, 12.0):
+        uso = treino.assign(flag=valor)
+        r = TrainServingValidator().check(treino, uso, fe)      # não deve levantar
+        assert 'flag' in r['flagged'], f'constante em {valor} passou batido'
+        d = [x for x in r['features'] if x['feature'] == 'flag'][0]
+        assert 'NEW_LEVEL' in (d.get('alerts') or []), \
+            f'constante em {valor} devia virar NEW_LEVEL, veio {d.get("alerts")}'
+        assert d.get('z') is None, 'z não deve ser calculado fora da escala 0/1'
+
+    # dentro de [0,1]: aí sim é mudança de taxa
+    for valor in (0.0, 1.0):
+        r = TrainServingValidator().check(treino, treino.assign(flag=valor), fe)
+        assert 'flag' in r['flagged']
+        d = [x for x in r['features'] if x['feature'] == 'flag'][0]
+        assert isinstance(d.get('z'), float), 'z devia ser numérico aqui'
+
+    # e a correção do bug 39 continua de pé: binária rara saudável não acusa
+    uso_ok = treino.assign(flag=(rng.random(n) < 0.02).astype(float))
+    assert TrainServingValidator().check(treino, uso_ok, fe)['flagged'] == [], \
+        'binária rara saudável voltou a dar falso positivo (regressão do bug 39)'
+
+
+# ═══ BUG 41: o laudo afirmava um check que não rodou ════════════════
+def test_laudo_nao_afirma_check_que_nao_rodou():
+    """
+    O resumo do laudo mostrava "✓ dados de treino e de uso consistentes"
+    mesmo quando a comparação treino × uso não havia acontecido — porque
+    `skew_features` vazio significava tanto "checou e está ok" quanto "não
+    checou". Num instrumento de decisão isso é o pior tipo de erro: a pessoa
+    promove o modelo confiando num visto que não existe.
+    """
+    import numpy as np
+    import pandas as pd
+    from sklearn.ensemble import RandomForestRegressor
+    from modelcheck.api import Guard
+
+    rng = np.random.default_rng(0)
+    n = 500
+    X = pd.DataFrame({'a': rng.normal(0, 1, n), 'b': rng.normal(0, 1, n),
+                      'c': rng.integers(1, 13, n).astype(float)})
+    y = X.a * 2 + X.c * 0.3 + rng.normal(0, .3, n)
+    mk = lambda d: RandomForestRegressor(n_estimators=30, max_depth=5,
+                                         random_state=0, n_jobs=1).fit(d, y)
+    quebrado = X.assign(c=X.c.mean())
+    v1, v2 = mk(X), mk(quebrado)
+    fe = list(X.columns)
+
+    # sem X_train a checagem não roda: o laudo tem de dizer isso
+    sem = Guard().audit(v1, v2, X, y, fe)
+    assert sem.skew_status == 'ausente', sem.skew_status
+    # a frase do RESUMO, nao o "nao verificado" da lista de checks
+    # individuais, que ja existia e e legitimo
+    FRASE = 'dados de treino e de uso: n\u00e3o verificado'
+    html = sem.to_html()
+    assert FRASE in html, \
+        'o resumo devia dizer "nao verificado" quando a checagem nao rodou'
+    assert 'dados de treino e de uso consistentes' not in html, \
+        'o resumo afirmou "consistentes" sem ter rodado a checagem'
+
+    # com X_train ela roda, e ai pode falar
+    com = Guard().audit(v1, v2, X, y, fe, X_train=quebrado)
+    assert com.skew_status == 'ok', com.skew_status
+    assert FRASE not in com.to_html()

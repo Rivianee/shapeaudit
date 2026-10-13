@@ -131,9 +131,12 @@ def test_representation_invalida(base):
 def test_check_features_feature_inexistente(base):
     X, y, m = base
     g = ModelGuard()
-    r = g.check_features(m, m, X, monitored=['nao_existe'],
+    # BUG 89 (v1.0.4): antes devolvia alert=False e o texto "continuam
+    # influenciando o modelo" — um visto sobre o que nem foi medido. Agora
+    # é erro com a lista de colunas disponíveis.
+    with pytest.raises(ValueError, match="não existem"):
+        g.check_features(m, m, X, monitored=['nao_existe'],
                          feature_names=list(X.columns))
-    assert r['alert'] is False, "feature inexistente não deve alertar"
 
 
 # ── audit_versions com menos de 2 modelos ────────────────────────────

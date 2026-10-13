@@ -69,8 +69,8 @@ def _slope_profile(x: np.ndarray,
 
     try:
         bins   = pd.qcut(x, n_bins, duplicates='drop')
-        x_mids = pd.Series(x).groupby(bins).mean().values
-        s_means = pd.Series(s).groupby(bins).mean().values
+        x_mids = pd.Series(x).groupby(bins, observed=True).mean().values
+        s_means = pd.Series(s).groupby(bins, observed=True).mean().values
 
         if len(x_mids) < 3:
             return None

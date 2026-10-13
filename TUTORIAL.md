@@ -1,4 +1,4 @@
-# ModelGuard — Tutorial
+# ShapeAudit — Tutorial
 
 Todas as saídas deste documento foram **geradas executando o código**, não
 escritas à mão. Dataset: Wine Quality (UCI), 1.599 amostras, 11 features.
@@ -8,7 +8,7 @@ escritas à mão. Dataset: Wine Quality (UCI), 1.599 amostras, 11 features.
 ## 1. Instalação
 
 ```bash
-pip install modelcheck
+pip install shapeaudit
 ```
 
 Dependências: `scikit-learn`, `pandas`, `numpy`, `scipy`, `shap`.
@@ -16,7 +16,7 @@ Opcional: `gudhi` (camada topológica).
 
 ---
 
-## 2. O problema que o ModelGuard resolve
+## 2. O problema que o ShapeAudit resolve
 
 Você retreinou um modelo. O R² caiu de **0.4199** para **0.4082** — uma queda
 de 1,2%, dentro de qualquer margem que um time aceitaria.
@@ -53,14 +53,25 @@ típico de falha no pipeline de dados (coluna virou nula, join perdido, filtro
 novo) e não de retreinamento normal.
 
 Comece por: 'alcohol' — esta variável deixou de influenciar o modelo.
-Também mudaram, possivelmente como consequência: 'residual sugar',
-'chlorides', 'pH'.
+Também mudaram, possivelmente como consequência: 'volatile acidity',
+'residual sugar', 'density'.
 
 Em números: 4 variável(is) mudaram de padrão; 6 mudaram de intensidade;
 a estrutura geral de decisão mudou.
 
-Recomendação: Não promover sem investigação.
+Recomendação: Não promover. Uma ou mais variáveis deixaram de influenciar
+o modelo — verifique o pipeline de dados antes de qualquer retreino.
+
+Não verificado nesta auditoria:
+  · train/serving consistency — não recebemos os dados de treino do modelo
+    novo (parâmetro X_train)
+  · class representation — a classe 3 tem apenas 1 exemplos na avaliação
+  · fairness — não verificamos se o erro do modelo mudou para algum grupo
+    de pessoas
+  (o veredito acima não cobre estes pontos)
 ```
+
+(Saída da v1.0.4, conferida rodando o script da §11.)
 
 **Note a ordem.** `alcohol` — a causa raiz — vem primeiro, com "Comece por".
 As outras três mudaram porque o modelo redistribuiu peso; são consequência.
@@ -74,7 +85,7 @@ r.problem_type          # IMPORTANCE_COLLAPSE
 r.root_cause_features   # ['alcohol']            ← comece aqui
 r.affected_features     # ['alcohol', 'residual sugar', 'chlorides', 'pH']
 r.plain                 # o texto acima
-r.plain_debug           # idem, com o índice de saúde
+r.plain_debug()         # idem, com o índice de saúde (é um método)
 ```
 
 ---
@@ -91,8 +102,12 @@ print(r.problem_type)       # NONE
 print(r.affected_features)  # []
 ```
 
-**Zero falso positivo.** Essa propriedade está travada em teste para três
-datasets: controle idêntico dá score exatamente 100.
+**Retreino saudável não é bloqueado.** Medido em 164 retreinos reais do
+ONS e nos testes da biblioteca: nenhum BLOQUEADO falso. A camada de forma,
+porém, **pode** pedir REVISAR num retreino saudável — no `demo_visual.py`,
+mudando só a semente, `total sulfur dioxide` dá distância 0,334, logo acima
+do limiar padrão de 0,33. Calibre o limiar no seu domínio (`calibrar_limiar`
+e `Guard(frechet_threshold=...)`).
 
 ---
 
@@ -143,7 +158,7 @@ v = TrainServingValidator()
 r = v.check(X_train, X_serving)
 
 print(r['flagged'])   # ['alcohol']
-print(r['alerts'])    # ['MEAN_SHIFT', 'OUT_OF_RANGE', 'PSI_ALERT']
+print(r['alerts'])    # ['MEAN_SHIFT', 'OUT_OF_RANGE', 'PSI_ALERT', 'SCALE_CHANGE']
 print(plain_report(r))
 ```
 
@@ -186,7 +201,7 @@ requests.post(WEBHOOK, json=r.to_slack('wine-quality'))
 ```
 
 ```
-:no_entry: ModelGuard — wine-quality: *BLOQUEADO*
+:no_entry: ShapeAudit — wine-quality: *BLOQUEADO*
 Uma ou mais variáveis deixaram de influenciar o modelo novo...
 ```
 
@@ -242,6 +257,14 @@ Use `problem_type` e `root_cause_features`.
 ---
 
 ## 10-bis. Caso real: transição energética (dados do ONS)
+
+> **Resultado de versão anterior.** Este caso foi medido quando o veredito
+> ainda usava o índice de saúde, removido na v0.11. Combinações como
+> "BLOQUEADO — MIXED" sem nenhuma variável colapsada não acontecem mais na
+> 1.0.4: hoje BLOQUEADO exige colapso de variável ou modelo degenerado. Os
+> dados deste caso não estão no repositório, então ele fica como narrativa;
+> os números atuais estão em `LIMITATIONS.md` (seções 7-bis a 7-sexies).
+
 
 Um exemplo em que **as três camadas dizem coisas diferentes, e as três estão
 certas**. Dados: geração horária por tipo de usina no Sudeste, ONS, 2025 e
@@ -305,6 +328,14 @@ relação entre térmica e hidrelétrica não é mais a mesma"*.
 
 ## 10-ter. Caso real: crise hídrica de 2021 — quando o retreino é a resposta certa
 
+> **Resultado de versão anterior.** Este caso foi medido quando o veredito
+> ainda usava o índice de saúde, removido na v0.11. Combinações como
+> "BLOQUEADO — MIXED" sem nenhuma variável colapsada não acontecem mais na
+> 1.0.4: hoje BLOQUEADO exige colapso de variável ou modelo degenerado. Os
+> dados deste caso não estão no repositório, então ele fica como narrativa;
+> os números atuais estão em `LIMITATIONS.md` (seções 7-bis a 7-sexies).
+
+
 O terceiro caso, e o único em que a ferramenta **aprova** o retreino. Dados:
 CMO e EAR do Sudeste, ONS, 2012–2022. Alvo: custo marginal de operação.
 
@@ -357,7 +388,7 @@ conhecia.
 | caso | veredito | leitura |
 |---|---|---|
 | pipeline quebrado | BLOQUEADO | **conserte o ETL** |
-| pandemia (§10-bis) | ATENÇÃO | mundo mudou — retreine e recalibre |
+| pandemia (estudo anterior, fora deste tutorial) | ATENÇÃO | mundo mudou — retreine e recalibre |
 | transição energética | BLOQUEADO | mudança estrutural grande — revalide |
 | **crise hídrica** | **APROVADO** | **o retreino foi a coisa certa** |
 

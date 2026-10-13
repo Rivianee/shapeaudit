@@ -1,15 +1,16 @@
 """
-api.py — API de alto nível do ModelGuard (classe Guard)
+api.py — API de alto nível do ShapeAudit (classe Guard)
 
 Fachada única para uso em produção. Esconde a escolha de detectores e
 traduz o diagnóstico para linguagem de negócio.
 
-    from modelcheck import ModelGuard
+    from shapeaudit import Guard
 
     g = Guard()
-    r = g.audit(model_v1, model_v2, X_eval, y_eval)
+    r = g.audit(model_v1, model_v2, X_eval, y_eval, X_train=X_treino_v2)
     print(r.plain)          # relatório em linguagem natural
-    print(r.verdict)        # APROVADO | ATENCAO | BLOQUEADO
+    print(r.verdict)        # APROVADO | ATENCAO | REVISAR | BLOQUEADO | INDETERMINADO
+    r.to_html("pt")         # laudo; r.to_dict() é o que o laudo recebe
     r.to_mlflow()           # dict achatado para MLflow/W&B
     r.to_slack()            # payload de mensagem para Slack/Teams
 """
@@ -61,6 +62,68 @@ _PLAIN = {
 }
 
 
+MODOS = ("retraining", "exploratory")
+
+
+def _checar_modo(mode):
+    """`mode` com erro de digitação era aceito em silêncio (BUG 87)."""
+    if mode is not None and mode not in MODOS:
+        raise ValueError(f"mode deve ser um de {MODOS}; veio {mode!r}")
+
+
+def _normalizar_entrada(X_eval, y_eval, feature_names, X_train):
+    """
+    Deixa a entrada no formato que o resto do código supõe (v1.0.4).
+
+    BUG 74: com numpy, `Guard.audit` quebrava com AttributeError (sem nomes)
+    ou devolvia APROVADO com SHAP e integridade falhando por dentro (com
+    nomes). BUG 69: nomes em ordem diferente das colunas trocavam a culpa
+    de variável. BUG 75: `y_eval` com tamanho errado ou com NaN passava
+    calado.
+    """
+    if not isinstance(X_eval, pd.DataFrame):
+        arr = np.asarray(X_eval)
+        if arr.ndim != 2:
+            raise ValueError(f"X_eval precisa ser 2D; veio com forma {arr.shape}")
+        cols = (list(feature_names) if feature_names is not None
+                and len(feature_names) == arr.shape[1]
+                else [f"f{i}" for i in range(arr.shape[1])])
+        X_eval = pd.DataFrame(arr, columns=cols)
+    cols = list(X_eval.columns)
+    if feature_names is None:
+        feature_names = cols
+    else:
+        feature_names = list(feature_names)
+        faltam = [f for f in feature_names if f not in cols]
+        if faltam:
+            raise ValueError(
+                f"feature_names tem variáveis que não estão em X_eval: "
+                f"{faltam[:5]}. Colunas disponíveis: {cols[:8]}")
+        if len(set(feature_names)) != len(feature_names):
+            raise ValueError("feature_names tem nomes repetidos")
+        # mesma lista em outra ordem: segue a ordem das colunas, que é a
+        # ordem da matriz de atribuição
+        if set(feature_names) == set(cols):
+            feature_names = cols
+    if X_train is not None and not isinstance(X_train, pd.DataFrame):
+        arr = np.asarray(X_train)
+        if arr.ndim != 2 or arr.shape[1] != len(cols):
+            raise ValueError(
+                f"X_train tem forma {arr.shape}; esperado (n, {len(cols)}) "
+                "com as mesmas colunas de X_eval")
+        X_train = pd.DataFrame(arr, columns=cols)
+    if y_eval is not None:
+        y = pd.Series(np.asarray(y_eval).ravel())
+        if len(y) != len(X_eval):
+            raise ValueError(
+                f"y_eval tem {len(y)} valores e X_eval tem {len(X_eval)} linhas")
+        n_nan = int(y.isna().sum())
+        if n_nan:
+            raise ValueError(f"y_eval tem {n_nan} valores ausentes")
+        y_eval = y.set_axis(X_eval.index)
+    return X_eval, y_eval, feature_names, X_train
+
+
 class AuditResult:
     """Resultado de auditoria com saídas prontas para consumo."""
 
@@ -87,10 +150,33 @@ class AuditResult:
         #   nenhum sinal                      -> APROVADO
         ts = self.raw.get('train_serving') or {}
         self.skew_features = list(ts.get('flagged') or [])
+        # BUG 41 (v1.0.3): `skew_features` vazio significava duas coisas
+        # diferentes — "checou e está tudo certo" e "a checagem não rodou" — e
+        # o laudo escrevia "✓ dados de treino e de uso consistentes" nos dois
+        # casos. Num instrumento de decisão, afirmar que um check passou
+        # quando ele nem rodou é o pior tipo de erro: a pessoa promove o
+        # modelo confiando num visto que não existe. Agora o estado é
+        # explícito, e o laudo diz "não verificado" quando é o caso.
+        #: 'ok' = rodou | 'erro' = rodou e falhou | 'ausente' = não rodou
+        if not self.raw.get('train_serving'):
+            self.skew_status = 'ausente'      # X_train não foi passado
+        elif ts.get('error'):
+            self.skew_status = 'erro'         # a checagem levantou exceção
+        else:
+            self.skew_status = 'ok'
+        self.skew_error = str(ts.get('error') or '')
         self.clone_redistribution = self._colapsos_por_clone(self._colapsos_brutos())
         self.relearning = self._relearning(self._colapsos_brutos())
         l1 = self.raw.get('layer1') or {}
         self.shape_divergences = list((l1.get('sdd') or {}).get('divs') or [])
+
+        # BUG 71 (v1.0.4): falha das camadas centrais não pode virar
+        # aprovação. A de integridade é a que decide BLOQUEADO; se ela não
+        # rodou, nenhuma ausência de alerta significa nada.
+        imp = (l1.get('importance') or {})
+        self.integrity_failed = bool(imp.get('error'))
+        metodo = str((l1.get('sdd') or {}).get('method', ''))
+        self.shape_failed = 'ERROR' in metodo.upper()
 
         if not l1:
             self.verdict, self.verdict_driver = 'INDETERMINADO', 'sem_medicao'
@@ -106,6 +192,11 @@ class AuditResult:
             self.verdict, self.verdict_driver = 'BLOQUEADO', 'model_collapse'
             self.action = ('Não promover. O modelo passou a prever praticamente '
                            'o mesmo valor para todos os casos.')
+        elif self.integrity_failed:
+            self.verdict, self.verdict_driver = 'INDETERMINADO', 'integridade_nao_rodou'
+            self.action = ('Não foi possível verificar se alguma variável '
+                           'deixou de influenciar o modelo. Não promova com '
+                           'base nesta auditoria; veja a lacuna declarada.')
         elif [s for s in self.skew_features
               if s not in self.clone_redistribution and s not in self.relearning]:
             # v0.12.2: a coluna trocada por um clone (ou que o modelo deixou
@@ -125,14 +216,28 @@ class AuditResult:
             self.action = ('Uma variável perdeu peso, mas outra quase idêntica '
                            'assumiu a informação. Confirme se a mudança no '
                            'pipeline foi intencional.')
+        elif self.shape_divergences and self.mode == 'exploratory':
+            # BUG 87 (v1.0.4): o modo exploratório era aceito e não mudava
+            # nada no veredito nem no laudo. Comparando arquiteturas de
+            # propósito, mudança de forma é esperada: informa, não alerta.
+            # Colapso de variável e dados diferentes continuam valendo.
+            self.verdict, self.verdict_driver = 'APROVADO', 'forma_esperada'
+            self.action = ('Modo exploratório: as curvas mudaram, o que é '
+                           'esperado ao comparar arquiteturas diferentes. '
+                           'Nenhuma variável deixou de ser usada.')
         elif self.shape_divergences:
             self.verdict, self.verdict_driver = 'REVISAR', 'shape'
             self.action = ('Com os mesmos dados, o modelo novo reage de forma '
                            'diferente a uma ou mais variáveis. Revise antes de '
                            'promover.')
+        elif self.shape_failed:
+            self.verdict, self.verdict_driver = 'INDETERMINADO', 'forma_nao_rodou'
+            self.action = ('A comparação de comportamento não rodou. Nenhuma '
+                           'outra camada encontrou problema, mas isso não '
+                           'basta para aprovar.')
         else:
             self.verdict, self.verdict_driver = 'APROVADO', 'nenhum_sinal'
-            self.action = 'Nenhuma camada medida encontrou mudança.'
+            self.action = 'Nenhuma camada principal encontrou mudança.'
 
     def _relearning(self, raiz=None) -> dict:
         """
@@ -155,9 +260,41 @@ class AuditResult:
         raiz = list(raiz or [])
         if Xt is None or Xe is None or not raiz:
             return {}
+        # BUG 73 (v1.0.4): o teste era só "desvio no treino > 10% do desvio
+        # na avaliação". Sentinela -999 AUMENTA o desvio; join desalinhado
+        # que embaralha a coluna o mantém. Os dois viravam "reaprendizado,
+        # não é falha de pipeline" — e ainda tiravam a coluna do ATENCAO.
+        # Só é reaprendizado se a checagem treino × uso rodou e NÃO acusou a
+        # coluna: aí sabemos que ela chega como no treino.
+        if getattr(self, 'skew_status', 'ausente') != 'ok':
+            return {}
+        # Refinamento (BUG 83, v1.0.4): a primeira versão desta correção
+        # negava reaprendizado a QUALQUER coluna acusada. Em série temporal
+        # toda coluna deriva um pouco, e dois retreinos saudáveis do ENA (o
+        # modelo trocou uma defasagem por outra) viraram BLOQUEADO. A
+        # distinção certa é o TIPO de alerta: corrupção de pipeline muda
+        # escala, média, faixa, nulos ou níveis; deriva natural muda só a
+        # forma da distribuição (PSI). Medido: sentinela -999, imputação por
+        # 0 e x1000 sempre trazem SCALE_CHANGE/MEAN_SHIFT/OUT_OF_RANGE; a
+        # deriva do ENA trouxe só PSI_WARN/PSI_ALERT (PSI 0,16 e 0,26).
+        #
+        # MEAN_SHIFT e OUT_OF_RANGE ficam FORA: série com tendência (carga de
+        # energia, média móvel numa janela 2023-2025 contra o histórico)
+        # produz os dois sem nenhuma corrupção, e um retreino saudável da
+        # carga virou BLOQUEADO. SCALE_CHANGE apareceu em toda corrupção
+        # medida (sentinela 30% e 97%, imputação por 0, x1000).
+        SINAL_DE_PIPELINE = {'CONSTANT_IN_TRAINING', 'NONFINITE',
+                             'MISSING_SHIFT', 'NEW_LEVEL', 'NEW_LEVELS',
+                             'SCALE_CHANGE', 'RATE_SHIFT', 'SCHEMA_MISMATCH'}
+        por_col = {x.get('feature'): set(x.get('alerts') or [])
+                   for x in (self.raw.get('train_serving') or {}).get('features', [])}
+        acusadas = {f for f in (getattr(self, 'skew_features', []) or [])
+                    if por_col.get(f, set()) & SINAL_DE_PIPELINE}
         out = {}
         try:
             for f in raiz:
+                if f in acusadas:
+                    continue
                 if f not in Xt.columns or f not in Xe.columns:
                     continue
                 vt, ve = float(Xt[f].std()), float(Xe[f].std())
@@ -346,6 +483,17 @@ class AuditResult:
                                 'vista'),
             })
 
+        sem_forma = list((l1.get('sdd') or {}).get('sem_forma') or [])
+        if sem_forma:
+            out.append({
+                'layer': 'interaction-only features',
+                'reason': ('sem curva de efeito próprio (o efeito vem de '
+                           'interação): ' + ', '.join(sem_forma[:5])),
+                'consequence': ('a comparação de forma não se aplica a essas '
+                                'variáveis; o peso delas continua sendo '
+                                'verificado pela camada de integridade'),
+            })
+
         # fairness nunca roda aqui — decisão documentada em fairness.py
         out.append({
             'layer': 'fairness',
@@ -416,21 +564,47 @@ class AuditResult:
         laudo declara "não avaliado" em vez de omitir a pergunta.
         """
         from modelcheck.laudo import render
-        return render({
+        return render(self.to_dict(decisao), lang=lang)
+
+    def to_dict(self, decisao: Optional[Dict] = None, lang: str = "pt") -> Dict:
+        """
+        Exatamente o dicionário que o laudo recebe (v1.0.4).
+
+        BUG 55: a CLI montava a sua própria versão, sem clones, sem
+        reaprendizado e sem `skew_status`, e o laudo da CLI dizia "✓" onde a
+        API dizia ATENCAO. Uma construção só, usada pelos dois.
+        """
+        # `lang` não altera o dicionário (os campos são os mesmos nos dois
+        # idiomas); fica na assinatura por compatibilidade com a CLI.
+        if isinstance(decisao, str):          # to_dict(lang) por posição
+            decisao, lang = None, decisao
+        l3 = self.raw.get("layer3") or {}
+        ood = (l3.get("ood") or {}).get("ood_features") or []
+        return {
             "verdict": self.verdict,
+            "verdict_driver": getattr(self, "verdict_driver", ""),
+            # BUG 88: rótulos e modo eram aceitos e não apareciam em lugar
+            # nenhum que a pessoa visse
+            "label_v1": self.raw.get("label_v1", ""),
+            "label_v2": self.raw.get("label_v2", ""),
+            "mode": self.mode,
+            "model_collapsed": bool(self.raw.get("model_collapsed")),
+            "ood_features": list(ood),
             "problem_type": getattr(self, "problem_type", "") or "",
             "root_cause_features": self.root_cause_features,
             "divergences": self.shape_divergences,
             "collapses": [],
             "model_diff": self.model_diff,
             "skew_features": self.skew_features,
+            "skew_status": getattr(self, "skew_status", "ausente"),
+            "skew_error": getattr(self, "skew_error", ""),
             "clone_redistribution": self.clone_redistribution,
             "relearning": list(self.relearning),
             "decisao": decisao or {},
             "n_eval": len(self.raw.get("X_eval_ref")) if self.raw.get("X_eval_ref") is not None else "—",
             "representation": (self.raw.get("layer1", {}) or {}).get("sdd", {}).get("method", "shap"),
             "not_evaluated": self.not_evaluated,
-        }, lang=lang)
+        }
 
     @property
     def model_diff(self) -> List[Dict[str, Any]]:
@@ -605,7 +779,7 @@ class AuditResult:
         emoji = {'APROVADO': ':white_check_mark:', 'ATENCAO': ':warning:',
                  'REVISAR': ':mag:', 'BLOQUEADO': ':no_entry:',
                  'INDETERMINADO': ':question:'}.get(self.verdict, ':warning:')
-        head = f"{emoji} ModelGuard — {model_name}: *{self.verdict}*"
+        head = f"{emoji} ShapeAudit — {model_name}: *{self.verdict}*"
         body = _PLAIN.get(self.problem_type, _PLAIN['NONE'])
         feats = self.affected_features
         if feats:
@@ -649,12 +823,25 @@ class Guard:
 
     Parâmetros do construtor:
         mode      'retraining' (default) ou 'exploratory'
-        threshold limiar de divergência de forma (default 0.30)
+        threshold limiar legado de espalhamento, usado só por `quick()`
+                  (default 0.30). NÃO é o limiar da camada de forma.
+        frechet_threshold
+                  limiar da distância de Fréchet na camada de forma. None usa
+                  o padrão validado (0.33). Passe aqui o resultado de
+                  `calibrar_limiar(...)['limiar']` para usar o limiar do seu
+                  domínio.
     """
 
-    def __init__(self, mode: str = "retraining", threshold: float = 0.30):
+    def __init__(self, mode: str = "retraining", threshold: float = 0.30,
+                 frechet_threshold: Optional[float] = None):
+        _checar_modo(mode)
         self.mode = mode
         self.threshold = threshold
+        # BUG 80 (v1.0.4): não havia como passar o limiar calibrado ao Guard.
+        # `threshold` chegava ao orquestrador e morria lá; a camada de forma
+        # usava sempre 0,33. O conselho "calibre com calibrar_limiar" não
+        # tinha como ser seguido.
+        self.frechet_threshold = frechet_threshold
 
     def check_features(self, model_v1, model_v2,
                        X_eval: pd.DataFrame,
@@ -681,6 +868,15 @@ class Guard:
             raise ValueError(
                 "check_features: `monitored` está vazio. Informe as features "
                 "cuja integridade é crítica, ex: monitored=['ENA_MLT'].")
+        # BUG 89 (v1.0.4): nome inexistente ('Alcohol' em vez de 'alcohol')
+        # era aceito e o resultado dizia que a variável "continua
+        # influenciando o modelo" — um visto sobre algo que nem foi medido.
+        cols = list(getattr(X_eval, 'columns', feature_names or []))
+        faltam = [m for m in monitored if m not in cols]
+        if faltam:
+            raise ValueError(
+                f"check_features: variáveis monitoradas que não existem em "
+                f"X_eval: {faltam}. Colunas disponíveis: {cols[:10]}")
         icd = ImportanceCollapseDetector()
         res = icd.compare(model_v1, model_v2, X_eval,
                           feature_names, monitored=monitored)
@@ -714,6 +910,18 @@ class Guard:
             existia apenas como detector separado e o veredito a ignorava,
             o que fazia um caso com skew real sair como APROVADO.
         """
+        _checar_modo(mode)
+        X_eval, y_eval, feature_names, X_train = _normalizar_entrada(
+            X_eval, y_eval, feature_names, X_train)
+        if getattr(self, 'frechet_threshold', None) is not None:
+            from modelcheck.orchestrator import _is_tree
+            if not (_is_tree(model_v1) and _is_tree(model_v2)):
+                import warnings
+                warnings.warn(
+                    "frechet_threshold só vale para modelos de árvore (camada "
+                    "TreeSHAP). Para estes modelos a camada de forma usa ALE e "
+                    "o limiar informado é ignorado.", UserWarning, stacklevel=2)
+
         from modelcheck._validate import checar_comparabilidade
         _ressalvas = checar_comparabilidade(
             model_v1, model_v2, X_eval,
@@ -721,7 +929,8 @@ class Guard:
             y_eval=y_eval)
 
         from modelcheck.orchestrator import ModelGuardOrchestrator
-        orc = ModelGuardOrchestrator(threshold=self.threshold)
+        orc = ModelGuardOrchestrator(threshold=self.threshold,
+                                     frechet_threshold=getattr(self, 'frechet_threshold', None))
         raw = orc.diagnose(model_v1, model_v2, X_eval, y_eval,
                            feature_names, label_v1, label_v2,
                            mode=mode or self.mode)

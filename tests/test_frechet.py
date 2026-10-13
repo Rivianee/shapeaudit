@@ -1,3 +1,4 @@
+import pytest
 """Detector por distância de Fréchet (v0.10.0)."""
 import inspect, warnings
 import numpy as np, pandas as pd, pytest
@@ -86,5 +87,7 @@ def test_calibrar_limiar_no_dominio():
 def test_calibrar_com_poucos_pares_declara():
     from modelcheck.frechet import calibrar_limiar
     X, y1, _ = _par('lin')
-    r = calibrar_limiar([], X, list(X.columns))
-    assert r['limiar'] is None and 'poucos pares' in r['reason']
+    # BUG 90 (v1.0.4): devolvia limiar=None, e o fluxo do README
+    # (Guard(frechet_threshold=cal['limiar'])) caía no padrão sem avisar.
+    with pytest.raises(ValueError, match="poucos pares"):
+        calibrar_limiar([], X, list(X.columns))

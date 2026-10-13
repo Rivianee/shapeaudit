@@ -31,7 +31,7 @@ print(r.not_evaluated)         # o que NÃO foi verificado
 distinguir "a coluna sumiu do pipeline" de "o modelo deixou de usar a coluna".
 Sem ele, a ferramenta funciona, mas declara a lacuna.
 
-## 3. Os quatro vereditos
+## 3. Os cinco vereditos
 
 | veredito | o que aconteceu | o que fazer |
 |---|---|---|
@@ -39,8 +39,12 @@ Sem ele, a ferramenta funciona, mas declara a lacuna.
 | **ATENÇÃO** | os dados chegam diferentes do treino, ou um clone assumiu o peso de outra variável | promova com monitoramento, recalibre |
 | **REVISAR** | com os mesmos dados, o modelo novo responde diferente | olhe as curvas antes de promover |
 | **APROVADO** | nenhuma camada encontrou mudança | pode promover |
+| **INDETERMINADO** | uma verificação principal não rodou (ex.: base de avaliação pequena demais, modelo sem suporte) | não promova com base nesta auditoria: veja a lacuna declarada no laudo |
 
 ## 4. Começar pela sua planilha
+
+`demo_excel.py`, `demo_visual.py` e `exemplo_churn.xlsx` estão no
+[repositório](https://github.com/Rivianee/shapeaudit), não no pacote do `pip`.
 
 ```bash
 python demo_excel.py                        # usa exemplo_churn.xlsx
@@ -50,7 +54,7 @@ python demo_excel.py meus_dados.xlsx alvo   # usa a sua
 A planilha precisa de: uma linha por caso, uma coluna por variável e **uma
 coluna com o que se quer prever**. Texto vira código automaticamente.
 
-O script treina duas versões, audita e escreve `laudo.html`. Saída:
+O script treina duas versões, audita e escreve `laudo_shapeaudit.html`. Saída:
 
 ```
    VEREDITO: REVISAR   (shape)
@@ -148,8 +152,27 @@ vezes** o da floresta nos mesmos dados. Calibre por domínio **e** por família.
 shapeaudit --help
 ```
 
-A CLI devolve código de saída 0 (limpo), 1 (problema) e 2 (erro de execução),
-e aceita saída em `text`, `json` ou `html`.
+```bash
+shapeaudit compare producao.pkl candidata.pkl avaliacao.csv --target y \
+    --train treino_candidata.csv --format html -o laudo.html
+```
+
+Códigos de saída:
+
+| código | quando |
+|---|---|
+| 0 | nada no nível de `--fail-on` |
+| 1 | encontrou problema no nível de `--fail-on` |
+| 2 | erro de execução, **ou veredito INDETERMINADO** (a auditoria não conseguiu decidir) |
+
+`--fail-on` é `high` por padrão: **BLOQUEADO falha o job**. Use `medium`
+para falhar também em REVISAR, `low` para incluir ATENÇÃO, e `none` só se
+quiser o laudo sem nunca falhar (modo observação). Até a 1.0.3 o padrão era
+`none`, e um modelo bloqueado passava no CI.
+
+`--train` passa os dados de treino da candidata; sem ele a camada treino ×
+uso não roda (o laudo diz "não verificado"). `--monitor a,b` roda a
+checagem dirigida nessas variáveis e bloqueia se alguma colapsou.
 
 ## 9. Antes de confiar
 

@@ -33,8 +33,17 @@ def _predict(model, X: pd.DataFrame) -> np.ndarray:
             p = model.predict_proba(X)
             if p.ndim == 2 and p.shape[1] == 2:
                 return np.asarray(p[:, 1], dtype=float)
+            if p.ndim == 2 and p.shape[1] > 2:
+                # BUG 70 (v1.0.4): com 3+ classes caía em predict() e tratava
+                # o rótulo como número (0->2 valia o dobro de 0->1). Não há
+                # curva única honesta aqui: falha explícita, e a camada vira
+                # lacuna declarada em vez de número errado.
+                raise ValueError('curva de efeito para classificador com '
+                                 f'{p.shape[1]} classes não é suportada')
+        except ValueError:
+            raise
         except Exception:
-            pass
+            pass    # noqa: lacuna-nao-aplicavel — sem predict_proba utilizável
     return np.asarray(model.predict(X), dtype=float)
 
 

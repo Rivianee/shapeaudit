@@ -54,9 +54,33 @@ def _registrar_falha(results, camada, exc, consequencia):
     })
 
 
+def _modelo_degenerado(model_v1, model_v2, X_eval) -> bool:
+    """
+    v2 prevê praticamente o mesmo valor para todos os casos, e v1 não.
+
+    Usa a saída contínua (probabilidade em classificador) — com `predict`
+    duro, um classificador desbalanceado que prevê sempre a maioria pareceria
+    degenerado sem ser.
+    """
+    def _saida(m):
+        if hasattr(m, 'predict_proba'):
+            try:
+                return np.asarray(m.predict_proba(X_eval), dtype=float)
+            except Exception:
+                pass    # noqa: lacuna-nao-aplicavel — usa predict()
+        return np.asarray(m.predict(X_eval), dtype=float)
+    try:
+        a, b = _saida(model_v1), _saida(model_v2)
+        amp = lambda z: float(np.nanmax(np.ptp(z.reshape(len(z), -1), axis=0)))
+        a1, a2 = amp(a), amp(b)
+        return bool(a1 > 1e-9 and a2 <= 1e-6 * max(a1, 1e-12) + 1e-12)
+    except Exception:
+        return False    # noqa: lacuna-nao-aplicavel — sinal complementar
+
+
 def _run_layer1(model_v1, model_v2, X_eval, y_eval,
                 feature_names, threshold, use_shap, run_rhale=False,
-                min_rel_importance=0.01):
+                min_rel_importance=0.01, frechet_threshold=None):
     """Camada 1: Forma Local."""
     results = {}
 
@@ -66,38 +90,55 @@ def _run_layer1(model_v1, model_v2, X_eval, y_eval,
         from modelcheck.shape import _shape_profile
         from modelcheck.slope import ShapeSlopeDetector
         try:
-            sv1 = shap.TreeExplainer(model_v1).shap_values(X_eval)
-            sv2 = shap.TreeExplainer(model_v2).shap_values(X_eval)
-            if sv1.ndim == 3: sv1 = sv1[:,:,1]
-            if sv2.ndim == 3: sv2 = sv2[:,:,1]
+            from modelcheck.frechet import como_array_shap, fatias_por_classe
+            # BUG 68 (v1.0.4): multiclasse mantém todas as classes; shap
+            # antigo (lista) também é normalizado em vez de quebrar em .ndim.
+            sv1 = como_array_shap(shap.TreeExplainer(model_v1).shap_values(X_eval))
+            sv2 = como_array_shap(shap.TreeExplainer(model_v2).shap_values(X_eval))
 
             # v0.10.0: detecção por distância de Fréchet, classe como nome.
             # O critério anterior (spread >= threshold) exigia que a
             # IMPORTÂNCIA mudasse junto com a forma e detectava 0% no
             # Benchmark B. Implementação única em modelcheck/frechet.py.
             from modelcheck.frechet import divergencias_forma, diff_influencia
-            shape_divs = divergencias_forma(X_eval, sv1, sv2, feature_names,
-                                            min_rel_importance=min_rel_importance)
-            results['influencia'] = diff_influencia(sv1, sv2, feature_names)
+            sem_forma = []
+            from modelcheck.frechet import LIMIAR_PADRAO
+            shape_divs = divergencias_forma(
+                X_eval, sv1, sv2, feature_names,
+                min_rel_importance=min_rel_importance,
+                limiar=(LIMIAR_PADRAO if frechet_threshold is None
+                        else float(frechet_threshold)),
+                _pulados=sem_forma)
+            results['influencia'] = diff_influencia(sv1, sv2, feature_names,
+                                                    X_eval=X_eval)
 
+            # slope é sinal de depuração, fora do veredito: usa a fatia
+            # principal (classe 1 no binário, classe 0 no multiclasse)
             slope_det = ShapeSlopeDetector(threshold_ratio=3.0)
-            slope_res = slope_det.check(sv1, sv2, X_eval, feature_names)
+            slope_res = slope_det.check(fatias_por_classe(sv1)[0],
+                                        fatias_por_classe(sv2)[0],
+                                        X_eval, feature_names)
             slope_alerts = [r for r in slope_res if r.get('divergence')]
 
-            results['sdd'] = {'divs': shape_divs, 'method': 'SHAP'}
+            results['sdd'] = {'divs': shape_divs, 'method': 'SHAP',
+                              'sem_forma': sem_forma}
             results['slope'] = {'alerts': slope_alerts}
             results['sv1'] = sv1; results['sv2'] = sv2
         except Exception as e:
             results['sdd'] = {'divs': [], 'method': f'SHAP_ERROR:{e}'}
             results['slope'] = {'alerts': []}
     else:
-        from modelcheck.ale_detector import ALEShapeDetector
-        det = ALEShapeDetector(n_bins=5, n_boot=20, min_confidence=0.6)
-        ale_res = det.compare(model_v1, model_v2, X_eval, feature_names)
-        shape_divs = [{'feature':r['feature'],'shape_v1':r['shape1'],
-                       'shape_v2':r['shape2'],'spread':round((r['conf1']+r['conf2'])/2,3)}
-                      for r in ale_res if r['divergence']]
-        results['sdd'] = {'divs': shape_divs, 'method': 'ALE'}
+        try:
+            from modelcheck.ale_detector import ALEShapeDetector
+            det = ALEShapeDetector(n_bins=5, n_boot=20, min_confidence=0.6)
+            ale_res = det.compare(model_v1, model_v2, X_eval, feature_names)
+            shape_divs = [{'feature':r['feature'],'shape_v1':r['shape1'],
+                           'shape_v2':r['shape2'],'spread':round((r['conf1']+r['conf2'])/2,3)}
+                          for r in ale_res if r['divergence']]
+            results['sdd'] = {'divs': shape_divs, 'method': 'ALE'}
+        except Exception as e:
+            # vira lacuna pelo método com ERROR (AuditResult.not_evaluated)
+            results['sdd'] = {'divs': [], 'method': f'ALE_ERROR:{e}'}
         results['slope'] = {'alerts': []}
 
     # RHALE — DESLIGADO POR PADRÃO (v1.61)
@@ -131,6 +172,13 @@ def _run_layer1(model_v1, model_v2, X_eval, y_eval,
         results['importance'] = {'importance_score': None, 'alerts': [],
                                   'n_collapse': 0, 'n_emergence': 0,
                                   'measured': False, 'error': str(e)}
+        # BUG 71 (v1.0.4): a falha da camada de integridade era guardada e
+        # esquecida. Sem causa raiz e sem lacuna declarada, o veredito caía
+        # em APROVADO com uma coluna inteiramente quebrada. É a camada que
+        # decide BLOQUEADO: a falha dela tem de aparecer.
+        _registrar_falha(results, 'feature integrity', e,
+                         'não foi possível verificar se alguma variável '
+                         'deixou de influenciar o modelo')
 
     # Paired Divergence
     try:
@@ -603,8 +651,10 @@ class ModelGuardOrchestrator:
         print(result['report_text'])
     """
 
-    def __init__(self, threshold: float = 0.30):
+    def __init__(self, threshold: float = 0.30,
+                 frechet_threshold: Optional[float] = None):
         self.threshold = threshold
+        self.frechet_threshold = frechet_threshold
 
     def diagnose(self, model_v1, model_v2,
                  X_eval: pd.DataFrame,
@@ -655,7 +705,8 @@ class ModelGuardOrchestrator:
             with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
                 f1 = ex.submit(_run_layer1, model_v1, model_v2,
                                 X_eval, y_eval, feature_names,
-                                self.threshold, use_shap)
+                                self.threshold, use_shap,
+                                frechet_threshold=self.frechet_threshold)
                 f2 = ex.submit(_run_layer2, model_v1, model_v2,
                                 X_eval, feature_names)
                 f3 = ex.submit(_run_layer3, model_v1, model_v2,
@@ -665,7 +716,8 @@ class ModelGuardOrchestrator:
                 layer3 = f3.result()
         else:
             layer1 = _run_layer1(model_v1, model_v2, X_eval, y_eval,
-                                  feature_names, self.threshold, use_shap)
+                                  feature_names, self.threshold, use_shap,
+                                  frechet_threshold=self.frechet_threshold)
             layer2 = _run_layer2(model_v1, model_v2, X_eval, feature_names)
             layer3 = _run_layer3(model_v1, model_v2, X_eval, feature_names)
 
@@ -685,7 +737,13 @@ class ModelGuardOrchestrator:
                                 layer1, layer2, layer3, interp,
                                 feature_names, mode)
 
+        # BUG 72 (v1.0.4): `model_collapsed` só existia no audit(); pelo
+        # Guard o ramo era código morto, e um v2 que prevê o mesmo valor
+        # para todo mundo saía REVISAR ("não é falha de pipeline").
+        model_collapsed = _modelo_degenerado(model_v1, model_v2, X_eval)
+
         return {
+            'model_collapsed': model_collapsed,
             'global_score': score,
             'status':       status,
             'layer1':       layer1,

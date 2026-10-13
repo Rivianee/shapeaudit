@@ -126,18 +126,25 @@ class ShapeThresholdCalibrator:
         n_feats = len(feature_names)
 
         # ── Treina modelos e extrai SHAP ──────────────────────────
+        # BUG 79 (v1.0.4): cada modelo era avaliado nas primeiras 40 linhas
+        # da SUA amostra — linhas diferentes por modelo — e a amostra vinha
+        # de np.random sem semente. O espalhamento medido misturava ruído de
+        # linha com ruído de modelo, e o limiar mudava a cada execução
+        # (0,461 vs 0,411 nos mesmos dados). Agora: semente fixa e um único
+        # conjunto de referência para todos os modelos.
+        rng = np.random.RandomState(getattr(self, 'seed', 0))
+        ref = X_arr[rng.choice(len(X_arr), min(200, len(X_arr)), replace=False)]
         models_sv = []
         for i in range(self.n_models):
             n_sample = int(len(X_arr) * self.sample_frac)
-            idx = np.random.choice(len(X_arr), n_sample, replace=False)
+            idx = rng.choice(len(X_arr), n_sample, replace=False)
             Xs, ys = X_arr[idx], y_arr[idx]
             if len(Xs) < 20:
                 continue
             rf = RandomForestRegressor(
                 n_estimators=30, max_depth=5,
                 random_state=i, n_jobs=1).fit(Xs, ys)
-            bg = Xs[:min(40, len(Xs))]
-            sv = shap.TreeExplainer(rf).shap_values(bg)
+            sv = shap.TreeExplainer(rf).shap_values(ref)
             models_sv.append(sv)
 
         if len(models_sv) < 2:

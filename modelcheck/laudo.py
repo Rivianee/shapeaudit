@@ -58,8 +58,69 @@ _CAMADAS_EN = [
  ("train/serving consistency","Train and serving consistency","Does incoming data match the scale seen in training?"),
  ("out-of-distribution behaviour","Behaviour at the extremes","Does the model behave differently outside the usual range?"),
  ("paired divergence","Divergence by subgroup","Was any subgroup affected differently?"),
- ("fairness","Weight of sensitive features","Do declared sensitive features carry too much weight?"),
+ # BUG 61: a pergunta em inglês era outra ("peso de variáveis sensíveis")
+ # — o laudo em pt e em en precisa perguntar a mesma coisa.
+ ("fairness","Error by group of people","Did the error change for any group of people?"),
 ]
+
+# BUG 61 (v1.0.4): a `consequence` de cada lacuna vem de api.py em
+# português, e o laudo em inglês a exibia crua. Tradução das frases conhecidas
+# e, para frases desconhecidas em português, um texto genérico por camada.
+_CONSEQ_EN = {
+    "uma troca de estratégia de imputação entre as versões não seria "
+    "detectada — passe X_train para verificar":
+        "a change of imputation strategy between versions would not be "
+        "detected — pass X_train to check",
+    "não dá para saber se os dados que chegam ao modelo mudaram em relação "
+    "ao treino. Passe `X_train=` para verificar":
+        "there is no way to tell whether the data reaching the model changed "
+        "relative to training. Pass `X_train=` to check",
+    "esta verificação não rodou; o que ela cobre ficou sem exame":
+        "this check did not run; what it covers was not examined",
+    "tratado como redistribuição, não como falha de pipeline; confirme se a "
+    "mudança foi intencional":
+        "treated as redistribution, not as a pipeline failure; confirm the "
+        "change was intentional",
+    "este modelo não aceita o método rápido de atribuição, então usamos "
+    "outro. Os números não são comparáveis com auditorias anteriores deste "
+    "mesmo par":
+        "this model does not support the fast attribution method, so another "
+        "one was used. The numbers are not comparable with earlier audits of "
+        "this same pair",
+    "não foi possível comparar as curvas: uma mudança de comportamento "
+    "passaria sem ser vista":
+        "the curves could not be compared: a change of behaviour would go "
+        "unnoticed",
+    "duas versões podem errar igual no total e errar mais para um grupo "
+    "específico. Se o seu modelo afeta pessoas, meça isso à parte com "
+    "`fairness_evolucao`":
+        "two versions can have the same overall error and err more for one "
+        "specific group. If your model affects people, measure this "
+        "separately with `fairness_evolucao`",
+}
+_CONSEQ_EN_CAMADA = {
+    "feature integrity": "whether any feature stopped influencing the model was not examined",
+    "shape divergence": "a change in how a feature affects the prediction would go unnoticed",
+    "train/serving consistency": "whether incoming data matches training was not examined",
+    "out-of-distribution behaviour": "behaviour outside the usual range was not examined",
+    "paired divergence": "whether a subgroup was affected differently was not examined",
+    "fairness": "whether the error changed for a group of people was not examined",
+}
+_MARCAS_PT = ("ã", "õ", "ç", "é", "ê", "á", "í", "ó", "ú", "â", " não ",
+              " de ", " que ", " para ", " uma ", " foi ")
+
+
+def _consequencia(texto, chave, lang):
+    """Texto da lacuna no idioma do laudo (BUG 61)."""
+    texto = str(texto or "")
+    if lang == "pt" or not texto:
+        return texto
+    if texto in _CONSEQ_EN:
+        return _CONSEQ_EN[texto]
+    baixo = f" {texto.lower()} "
+    if any(m in baixo for m in _MARCAS_PT):
+        return _CONSEQ_EN_CAMADA.get(chave, "this check was not examined")
+    return texto
 
 _PROBLEMA_EN = {
     "mixed": "More than one layer found a signal.",
@@ -103,8 +164,11 @@ _ACAO_EN = {"BLOQUEADO":"Do not promote","REVISAR":"Review before promoting",
 def _idioma(lang="auto"):
     """Resolve o idioma: argumento, MODELCHECK_LANG, LANG do sistema, en."""
     import os
-    if lang and lang != "auto":
-        return lang if lang in _T else "en"
+    # BUG 61 (v1.0.4): 'pt-BR', 'pt_BR' e 'PT' caíam em inglês — só 'pt'
+    # exato era reconhecido. Normaliza para o código base do idioma.
+    if lang and str(lang).lower() != "auto":
+        base = str(lang).strip().lower().replace("_", "-").split("-")[0]
+        return base if base in _T else "en"
     for var in ("MODELCHECK_LANG", "LC_ALL", "LANG"):
         v = (os.environ.get(var) or "").lower()
         if v.startswith("pt"):
@@ -182,9 +246,48 @@ def _e(x: Any) -> str:
     return _html.escape(str(x))
 
 
+# BUG 62 (v1.0.4): NaN/inf saíam como "+nan" no texto e como "M 44.0,nan"
+# no SVG; `frechet: None` numa divergência derrubava o render com TypeError.
+# Todo número passa por aqui: não finito ou ausente vira "—".
+def _float(x):
+    """float finito, ou None."""
+    try:
+        f = float(x)
+    except (TypeError, ValueError):
+        return None
+    return f if f == f and f not in (float("inf"), float("-inf")) else None
+
+
+def _num(x, fmt=".3g") -> str:
+    f = _float(x)
+    return "—" if f is None else format(f, fmt)
+
+
+def _lacuna(res: Dict[str, Any], chave: str):
+    """
+    Entrada de `not_evaluated` da camada `chave`, ou None (BUG 53).
+
+    As notas de redistribuição entre clones também entram em
+    `not_evaluated` sob 'feature integrity', mas não dizem que a camada
+    deixou de rodar — dizem o que ela concluiu. Não contam como lacuna.
+    """
+    clones = dict(res.get("clone_redistribution") or {})
+    for i in (res.get("not_evaluated") or []):
+        layer = str(i.get("layer") or i.get("check") or "")
+        if chave not in layer:
+            continue
+        motivo = str(i.get("reason") or "")
+        if chave == "integrity" and any(
+                motivo.startswith(f"{f} perdeu peso") for f in clones):
+            continue
+        return i
+    return None
+
+
 def _cobertura(res: Dict[str, Any], lang="pt"):
     """Quais verificações rodaram, quais não, e por quê."""
-    nao = {i["layer"]: i for i in (res.get("not_evaluated") or [])}
+    nao = {str(i.get("layer") or i.get("check") or ""): i
+           for i in (res.get("not_evaluated") or [])}
     linhas, feitas = [], 0
     for chave, titulo, pergunta in (_CAMADAS if lang == "pt" else _CAMADAS_EN):
         achou = next((v for k, v in nao.items() if chave in k), None)
@@ -192,6 +295,23 @@ def _cobertura(res: Dict[str, Any], lang="pt"):
             feitas += 1
         linhas.append((titulo, pergunta, achou))
     return linhas, feitas, len(_CAMADAS)
+
+
+def _linha_versoes(res, PT) -> str:
+    """BUG 88 (v1.0.4): rótulos e modo eram aceitos e nunca apareciam."""
+    a, b = str(res.get("label_v1") or ""), str(res.get("label_v2") or "")
+    partes = []
+    if a or b:
+        partes.append(f"{_e(a or '—')} → {_e(b or '—')}")
+    if res.get("mode") == "exploratory":
+        partes.append("modo exploratório: mudança de forma é esperada e não "
+                      "alerta" if PT else
+                      "exploratory mode: shape changes are expected and do "
+                      "not alert")
+    if not partes:
+        return ""
+    return ('<p class="versoes" style="margin:-22px 0 26px;color:var(--suave);'
+            'font-size:14px">' + " · ".join(partes) + "</p>")
 
 
 def render(res: Dict[str, Any], lang: str = "auto") -> str:
@@ -237,28 +357,43 @@ def render(res: Dict[str, Any], lang: str = "auto") -> str:
             f"<tr><td><code>{_e(c.get('feature'))}</code></td>"
             f"<td class='n'>{_e(c.get('importance_before'))}</td>"
             f"<td class='n'>{_e(c.get('importance_after'))}</td>"
-            f"<td class='n'>{_e(round(float(c.get('ratio', 0)) * 100))}%</td>"
+            f"<td class='n'>{_e(_num((_float(c.get('ratio')) or 0) * 100, '.0f'))}%</td>"
             f"</tr>" for c in cols))
 
     def _grafico(d):
         """Curva de efeito das duas versões, com a faixa de maior desacordo."""
-        p1 = d.get("efeito_v1") or []; p2 = d.get("efeito_v2") or []
+        p1 = [_float(v) for v in (d.get("efeito_v1") or [])]
+        p2 = [_float(v) for v in (d.get("efeito_v2") or [])]
         bordas = d.get("bordas") or []
         if len(p1) < 3 or len(p2) != len(p1):
             return ""
+        # BUG 62: pontos não finitos ficam fora do caminho (o traço é
+        # interrompido ali) e fora da escala do eixo.
+        finitos = [v for v in p1 + p2 if v is not None]
+        if len(finitos) < 2:
+            return ""
         W, H = 330, 128
         ml, mr, mt, mb = 44, 10, 12, 26
-        lo, hi = min(p1 + p2), max(p1 + p2)
+        lo, hi = min(finitos), max(finitos)
         amp = (hi - lo) or 1.0
         n = len(p1)
         px = lambda i: ml + i * (W - ml - mr) / (n - 1)
         py = lambda v: mt + (hi - v) / amp * (H - mt - mb)
-        cam = lambda p: "M " + " L ".join(f"{px(i):.1f},{py(v):.1f}"
-                                          for i, v in enumerate(p))
+
+        def cam(p):
+            partes, novo = [], True
+            for i, v in enumerate(p):
+                if v is None:
+                    novo = True
+                    continue
+                partes.append(f'{"M" if novo else "L"} {px(i):.1f},{py(v):.1f}')
+                novo = False
+            return " ".join(partes)
         g = d.get("maior_gap") or {}
         faixa = ""
-        if "bin" in g and n > 1:
-            b = int(g["bin"])
+        b = _float(g.get("bin"))
+        if b is not None and n > 1:
+            b = int(b)
             x0 = px(max(b - .5, 0)); x1 = px(min(b + .5, n - 1))
             faixa = (f'<rect x="{x0:.1f}" y="{mt}" width="{max(x1-x0,3):.1f}" '
                      f'height="{H-mt-mb}" fill="#a3241c" opacity="0.07"/>')
@@ -268,10 +403,9 @@ def render(res: Dict[str, Any], lang: str = "auto") -> str:
                     f'y2="{py(0):.1f}" stroke="#d6d6d2" stroke-width="1"/>')
         rot = ""
         if len(bordas) >= 2:
-            fmt = lambda v: (f"{v:.4g}")
-            rot = (f'<text x="{ml}" y="{H-8}" class="ax">{fmt(bordas[0])}</text>'
+            rot = (f'<text x="{ml}" y="{H-8}" class="ax">{_num(bordas[0], ".4g")}</text>'
                    f'<text x="{W-mr}" y="{H-8}" class="ax" text-anchor="end">'
-                   f'{fmt(bordas[-1])}</text>')
+                   f'{_num(bordas[-1], ".4g")}</text>')
         eixo_y = (f'<text x="0" y="{mt+8}" class="ax">{hi:+.2f}</text>'
                   f'<text x="0" y="{H-mb}" class="ax">{lo:+.2f}</text>')
         return (f'<svg viewBox="0 0 {W} {H}" width="{W}" height="{H}" '
@@ -288,14 +422,16 @@ def render(res: Dict[str, Any], lang: str = "auto") -> str:
         linhas = []
         if x:
             linhas.append((("influência" if PT else "influence"),
-                           f'{x.get("peso_v1",0):.0%} → {x.get("peso_v2",0):.0%}'))
+                           f'{_num(x.get("peso_v1"), ".0%")} → '
+                           f'{_num(x.get("peso_v2"), ".0%")}'))
         a = _forma(d.get("shape_v1", d.get("shape_before")), lang)
         b = _forma(d.get("shape_v2", d.get("shape_after")), lang)
         linhas.append((("forma" if PT else "shape"),
                        f'{_e(a)} → {_e(b)}' if a != b else _e(a)))
         if "de" in g:
             linhas.append((("maior divergência" if PT else "largest gap"),
-                           f'{g["de"]:.4g} – {g["ate"]:.4g}'))
+                           f'{_num(g.get("de"), ".4g")} – '
+                           f'{_num(g.get("ate"), ".4g")}'))
         return "".join(f'<div class="f"><span>{k}</span><b>{v}</b></div>'
                        for k, v in linhas)
 
@@ -311,9 +447,10 @@ def render(res: Dict[str, Any], lang: str = "auto") -> str:
                        f"differs in part of the range.")
             else:
                 cab = f"From <b>{_e(a)}</b> to <b>{_e(b)}</b>."
-            if "de" in g:
+            if "de" in g and _float(g.get("v1")) is not None \
+                    and _float(g.get("v2")) is not None:
                 cab += (f" In that band the new model's effect goes from "
-                        f"{g['v1']:+.3f} to {g['v2']:+.3f}.")
+                        f"{_num(g['v1'], '+.3f')} to {_num(g['v2'], '+.3f')}.")
             return cab
         if d.get("mesma_categoria"):
             cab = ("A direção geral continua a mesma, mas a intensidade do "
@@ -321,10 +458,13 @@ def render(res: Dict[str, Any], lang: str = "auto") -> str:
         else:
             cab = (f"A relação mudou de <b>{_e(a)}</b> para <b>{_e(b)}</b>: a "
                    f"nova versão responde de outro jeito nessa região.")
-        if "de" in g:
-            direcao = "mais alto" if g["delta"] > 0 else "mais baixo"
+        delta = _float(g.get("delta"))
+        if ("de" in g and delta is not None and delta != 0
+                and _float(g.get("v1")) is not None
+                and _float(g.get("v2")) is not None):
+            direcao = "mais alto" if delta > 0 else "mais baixo"
             cab += (f" Nessa faixa o efeito da versão nova é {direcao} "
-                    f"({g['v1']:+.3f} → {g['v2']:+.3f}).")
+                    f"({_num(g['v1'], '+.3f')} → {_num(g['v2'], '+.3f')}).")
         return cab
 
     def _resumo_card(d):
@@ -337,19 +477,19 @@ def render(res: Dict[str, Any], lang: str = "auto") -> str:
 
     def _quao_longe(d):
         """O número sozinho não diz nada a quem chega agora."""
-        lim = d.get("limiar") or 0.33
-        r = (d.get("frechet") or 0) / (lim or 1)
+        lim = _float(d.get("limiar")) or 0.33
+        r = (_float(d.get("frechet")) or 0) / lim
         if r >= 3:
             return ("divergência alta" if PT else "large divergence")
         if r >= 1.5:
             return ("mudança relevante" if PT else "relevant change")
         return ("acima do limite esperado" if PT else "above the expected limit")
 
-    _md_idx = {x["feature"]: x for x in (res.get("model_diff") or [])}
+    _md_idx = {x.get("feature"): x for x in (res.get("model_diff") or [])}
     blocos = "".join(
         f'<article class="div"><h3><code>{_e(d.get("feature"))}</code>'
         f'<span class="d"><b>{_e(_quao_longe(d))}</b>'
-        f'<i>{"distância" if PT else "distance"} {d.get("frechet")}</i></span></h3>'
+        f'<i>{"distância" if PT else "distance"} {_num(d.get("frechet"))}</i></span></h3>'
         f'<p class="rescard">{_e(_resumo_card(d))}</p>'
         f'<div class="ficha">{_ficha(d, _md_idx)}</div>'
         f'<div class="linha">{_grafico(d)}<p>{_leitura(d)}</p></div></article>'
@@ -369,40 +509,140 @@ def render(res: Dict[str, Any], lang: str = "auto") -> str:
     # ── resumo executivo, o que estável, impacto e próximos passos ────
     skew = list(res.get("skew_features") or [])
     clones = dict(res.get("clone_redistribution") or {})
-    rele = list(res.get("relearning") or [])
+    rele = [f for f in (res.get("relearning") or []) if f not in raiz]
     dec = res.get("decisao") or {}
+    # BUG 52 (v1.0.4): o resultado de comportamento fora da faixa usual
+    # existia mas nunca aparecia, enquanto o texto dizia "nenhuma camada
+    # medida encontrou diferença". Quando vier no dicionário, vira alerta.
+    ood = list(res.get("ood_features") or [])
     n_div = len(divs)
-    pior = max(divs, key=lambda d: d.get("frechet", 0)) if divs else None
+
+    def _frechet_ord(d):
+        f = _float(d.get("frechet"))
+        return float("-inf") if f is None else f
+    pior = max(divs, key=_frechet_ord) if divs else None
+
+    # BUG 53 (v1.0.4): um "✓" só sai para camada que rodou. Antes, a camada
+    # de forma listada em `not_evaluated` ainda gerava "✓ nenhuma relação
+    # mudou de forma" — o resumo afirmava o que a cobertura negava.
+    lac_int = _lacuna(res, "integrity")
+    lac_forma = _lacuna(res, "shape")
+    # Compatibilidade: dicionarios gerados pela 1.0.2 nao tem `skew_status`.
+    # Se ha variavel sinalizada, a checagem rodou — nao da para ter resultado
+    # sem ter rodado. So na ausencia dos dois e que ela de fato nao rodou.
+    skew_status = res.get("skew_status") or ("ok" if skew else "ausente")
+    skew_ok = skew_status == "ok"
+    skew_extra = [s for s in skew if s not in raiz and s not in clones
+                  and s not in rele] if skew_ok else []
+    principais_ok = lac_int is None and lac_forma is None and skew_ok
+    driver = str(res.get("verdict_driver") or "")
+    # BUG 65 (v1.0.4): colapso do modelo e INDETERMINADO não podem cair em
+    # "Nenhuma diferença relevante" sob um título que não aprova.
+    colapso = bool(driver == "model_collapse" or res.get("model_collapsed")
+                   or str(res.get("problem_type") or "") == "MODEL_COLLAPSED")
+
+    def nomes(fs):
+        return ", ".join(f"<code>{_e(f)}</code>" for f in fs)
+
+    def _motivo(lac, camada):
+        """Por que a camada não rodou, no idioma do laudo."""
+        if PT:
+            m = str(lac.get("reason") or lac.get("consequence") or "")
+        else:
+            m = _consequencia(lac.get("consequence") or lac.get("reason"),
+                              camada, "en")
+        return f" ({_e(m)})" if m else ""
+
+    # BUG 51 (v1.0.4): o texto afirmava que a variável "chega constante nos
+    # dados que a nova versão vai receber" (pt) / "constant in training"
+    # (en) sem ter verificado — e os dois idiomas diziam coisas diferentes.
+    # Só afirmamos a diferença nos dados de treino quando a checagem treino
+    # × uso rodou e sinalizou a própria variável.
+    raiz_conf = [f for f in raiz if skew_ok and f in skew]
+    if raiz_conf:
+        conf_pt = (f' A checagem treino × uso confirmou que, nos dados de '
+                   f'treino da nova versão, {nomes(raiz_conf)} chega(m) '
+                   f'diferente(s) do que o modelo recebe em uso.')
+        conf_en = (f' The train/serving check confirmed that, in the new '
+                   f'version\'s training data, {nomes(raiz_conf)} differ(s) '
+                   f'from what the model receives in serving.')
+    else:
+        conf_pt = conf_en = ""
 
     def li(ok, txt):
         m = "✓" if ok else "⚠"
         return f'<li class="{"ok" if ok else "al"}"><span>{m}</span>{txt}</li>'
 
     estaveis, alertas = [], []
-    (estaveis if not raiz else alertas).append(
-        ("nenhuma variável deixou de influenciar o modelo" if PT else
-         "no feature stopped influencing the model") if not raiz else
-        (f"{len(raiz)} variável(is) deixou de influenciar o modelo" if PT else
-         f"{len(raiz)} feature(s) stopped influencing the model"))
-    skew_extra = [s for s in skew if s not in raiz and s not in clones
-                  and s not in rele]
-    (estaveis if not skew_extra else alertas).append(
-        (("dados de treino e de uso consistentes" if not skew else
-          "dados de treino e de uso: nenhuma outra diferença") if PT else
-         ("training and serving consistent" if not skew else
-          "training and serving: no other difference")) if not skew_extra else
-        (f"{len(skew_extra)} variável(is) chegam diferentes do treino" if PT else
-         f"{len(skew_extra)} feature(s) arrive different from training"))
-    (estaveis if not clones else alertas).append(
-        ("nenhuma substituição por variável quase idêntica" if PT else
-         "no substitution by a near-copy") if not clones else
-        (f"{len(clones)} variável(is) substituída(s) por quase-cópia" if PT else
-         f"{len(clones)} feature(s) replaced by a near-copy"))
-    (estaveis if not divs else alertas).append(
-        ("nenhuma relação mudou de forma" if PT else
-         "no relationship changed shape") if not divs else
-        (f"{n_div} relação(ões) mudaram de forma" if PT else
-         f"{n_div} relationship(s) changed shape"))
+    _md_idx_r = {x.get("feature"): x for x in (res.get("model_diff") or [])}
+    # integridade: causa raiz, reaprendizado, ou lacuna — nunca "✓" com
+    # qualquer um dos três (BUG 50, BUG 53)
+    if raiz:
+        alertas.append(f"{len(raiz)} variável(is) deixou de influenciar o modelo"
+                       if PT else
+                       f"{len(raiz)} feature(s) stopped influencing the model")
+    # BUG 50 (v1.0.4): com reaprendizado (variável 55% → 0%) o resumo dizia
+    # "✓ nenhuma variável deixou de influenciar o modelo". Agora nomeia.
+    for f in rele:
+        x = _md_idx_r.get(f) or {}
+        peso = (f": {_num(x.get('peso_v1'), '.0%')} → "
+                f"{_num(x.get('peso_v2'), '.0%')}") if x else ""
+        alertas.append(f"<code>{_e(f)}</code> deixou de ser usada "
+                       f"(reaprendizado){peso}" if PT else
+                       f"<code>{_e(f)}</code> stopped being used "
+                       f"(relearning){peso}")
+    if lac_int is not None and not raiz and not rele:
+        alertas.append(("variáveis que deixaram de influenciar: não verificado"
+                        if PT else
+                        "features that stopped influencing: not verified")
+                       + _motivo(lac_int, "feature integrity"))
+    elif not raiz and not rele and not clones:
+        estaveis.append("nenhuma variável deixou de influenciar o modelo"
+                        if PT else "no feature stopped influencing the model")
+    # BUG 41 (v1.0.3): não afirmar "consistentes" quando a checagem não rodou.
+    if not skew_ok:
+        por_que = ((" (dados de treino não informados)" if PT else
+                    " (training data not provided)")
+                   if skew_status == "ausente" else
+                   (" (a checagem falhou)" if PT else " (the check failed)"))
+        alertas.append(
+            ("dados de treino e de uso: não verificado" if PT else
+             "training vs serving: not verified") + por_que)
+    elif skew_extra:
+        alertas.append(
+            f"{len(skew_extra)} variável(is) chegam diferentes do treino" if PT
+            else f"{len(skew_extra)} feature(s) arrive different from training")
+    else:
+        estaveis.append(
+            ("dados de treino e de uso consistentes" if not skew else
+             "dados de treino e de uso: nenhuma outra diferença") if PT else
+            ("training and serving consistent" if not skew else
+             "training and serving: no other difference"))
+    if clones:
+        alertas.append(f"{len(clones)} variável(is) substituída(s) por "
+                       f"quase-cópia" if PT else
+                       f"{len(clones)} feature(s) replaced by a near-copy")
+    elif lac_int is None:
+        estaveis.append("nenhuma substituição por variável quase idêntica"
+                        if PT else "no substitution by a near-copy")
+    if divs:
+        alertas.append(f"{n_div} relação(ões) mudaram de forma" if PT else
+                       f"{n_div} relationship(s) changed shape")
+    elif lac_forma is not None:
+        alertas.append(("forma das relações: não verificado" if PT else
+                        "shape of the relationships: not verified")
+                       + _motivo(lac_forma, "shape divergence"))
+    else:
+        estaveis.append("nenhuma relação mudou de forma" if PT else
+                        "no relationship changed shape")
+    if ood:
+        alertas.append(f"comportamento diferente fora da faixa usual: "
+                       f"{nomes(ood)}" if PT else
+                       f"different behaviour outside the usual range: "
+                       f"{nomes(ood)}")
+    if colapso:
+        alertas.append("o modelo passou a prever praticamente o mesmo valor"
+                       if PT else "the model now predicts nearly the same value")
 
     resumo = (f'<section class="sumario"><h2>'
               f'{"Resumo" if PT else "Summary"}</h2><ul class="chips">'
@@ -410,88 +650,205 @@ def render(res: Dict[str, Any], lang: str = "auto") -> str:
               + "".join(li(True, e) for e in estaveis)
               + '</ul></section>')
 
-    # subtítulo do topo e leitura em uma frase
-    def _frase(n_forma, raiz, skew, clones):
+    # subtítulo do topo — a ordem segue o que de fato puxa o veredito
+    # (BUG 54): causa raiz > colapso > treino × uso > reaprendizado/clones
+    # > forma > fora da faixa.
+    def _frase():
         if raiz:
-            v = f'<code>{_e(raiz[0])}</code>' + (
+            alvo_ = f'<code>{_e(raiz[0])}</code>' + (
                 f' (e mais {len(raiz)-1})' if len(raiz) > 1 and PT else
                 f' (and {len(raiz)-1} more)' if len(raiz) > 1 else '')
-            return (f'A variável {v} deixou de influenciar a previsão. Ela '
-                    f'também chega constante nos dados que a nova versão vai '
-                    f'receber.' if PT else
-                    f'Feature {v} stopped influencing the prediction and is '
-                    f'constant in the data the new version was trained on.')
-        if skew:
+            return (f'A variável {alvo_} deixou de influenciar a previsão.'
+                    + conf_pt if PT else
+                    f'Feature {alvo_} stopped influencing the prediction.'
+                    + conf_en)
+        if colapso:
+            return _texto_problema("MODEL_COLLAPSED", lang)
+        if skew_extra:
             return ('Os dados que chegam estão diferentes dos que o modelo viu '
                     'no treino.' if PT else
                     'Incoming data differs from what the model saw in training.')
+        if rele:
+            return (f'O modelo novo deixou de usar {nomes(rele)}, que continua '
+                    f'chegando nos dados.' if PT else
+                    f'The new model stopped using {nomes(rele)}, which still '
+                    f'arrives in the data.')
         if clones:
             return ('Uma variável perdeu peso e outra quase idêntica assumiu o '
                     'lugar dela.' if PT else
                     'A feature lost weight and a near-copy took over.')
-        if n_forma:
-            return (f'A nova versão passou nos checks principais, mas mudou a '
-                    f'forma como {n_forma} variável(is) influenciam a previsão.'
+        if n_div:
+            # BUG 54: "passou nos checks principais" só quando todos rodaram
+            if principais_ok:
+                return (f'A nova versão passou nos checks principais, mas '
+                        f'mudou a forma como {n_div} variável(is) influenciam '
+                        f'a previsão.' if PT else
+                        f'The new version passes the main checks, but changed '
+                        f'how {n_div} feature(s) influence the prediction.')
+            return (f'A nova versão mudou a forma como {n_div} variável(is) '
+                    f'influenciam a previsão.' if PT else
+                    f'The new version changed how {n_div} feature(s) '
+                    f'influence the prediction.')
+        if ood:
+            return _texto_problema("OOD_ONLY", lang)
+        if v == "INDETERMINADO":
+            return ('Não foi possível medir a diferença entre as duas versões.'
                     if PT else
-                    f'The new version passes the main checks, but changed how '
-                    f'{n_forma} feature(s) influence the prediction.')
+                    'The difference between the two versions could not be '
+                    'measured.')
+        if v != "APROVADO":
+            pt_ = str(res.get("problem_type") or "")
+            if pt_ and pt_ != "NONE":
+                return _texto_problema(pt_, lang)
+            return ('O veredito não vem de nenhuma diferença listada neste '
+                    'laudo; confira as verificações abaixo.' if PT else
+                    'The verdict does not come from any difference listed in '
+                    'this report; see the checks below.')
+        if not principais_ok:
+            return ('Nenhuma diferença relevante nas verificações que rodaram.'
+                    if PT else
+                    'No relevant difference in the checks that ran.')
         return ('Nenhuma diferença relevante entre as duas versões.' if PT else
                 'No relevant difference between the two versions.')
 
-    subtitulo = _frase(n_div, raiz, skew, clones)      # já contém <code>
+    subtitulo = _frase()      # já contém <code>
     if raiz:
         interpreta = ('A evidência aponta primeiro para um problema de dados ou '
                       'de pipeline, e não para uma mudança normal de '
                       'aprendizado.' if PT else
                       'The evidence points first to a data or pipeline problem '
                       'rather than to ordinary relearning.')
-    elif skew:
+    elif colapso:
+        interpreta = ('O modelo novo deixou de distinguir os casos: a previsão '
+                      'quase não varia.' if PT else
+                      'The new model no longer tells cases apart: its '
+                      'prediction barely varies.')
+    elif skew_extra:
         interpreta = ('O modelo pode estar certo; o que mudou foi o que chega '
                       'até ele.' if PT else
                       'The model may be fine; what changed is what reaches it.')
+    elif rele:
+        interpreta = ('O modelo novo aprendeu a não depender de uma variável '
+                      'que continua chegando; confirme se isso é esperado.'
+                      if PT else
+                      'The new model learned not to rely on a feature that '
+                      'still arrives; confirm this is expected.')
+    elif clones:
+        interpreta = ('O peso passou de uma variável para uma quase-cópia '
+                      'dela.' if PT else
+                      'The weight moved from a feature to a near-copy of it.')
     elif n_div:
         interpreta = ('As variáveis principais continuam as mesmas. O que mudou '
                       'foi o jeito de usá-las.' if PT else
                       'The main features are the same. What changed is how they '
                       'are used.')
+    elif ood:
+        interpreta = ('Dentro da faixa usual dos dados as versões concordam; '
+                      'fora dela, não.' if PT else
+                      'Within the usual data range the versions agree; outside '
+                      'it, they do not.')
+    elif v == "INDETERMINADO":
+        interpreta = ('As verificações principais não produziram medição; '
+                      'este laudo não permite concluir nada sobre a nova '
+                      'versão.' if PT else
+                      'The main checks produced no measurement; this report '
+                      'does not support any conclusion about the new version.')
     else:
-        interpreta = ('Nenhuma camada medida encontrou diferença entre as duas '
-                      'versões.' if PT else
-                      'No measured layer found a difference between the two '
-                      'versions.')
+        # BUG 52: "Nenhuma camada medida" era falso quando camadas
+        # adicionais tinham resultado. A frase fala só das principais.
+        interpreta = ('Nenhuma das camadas principais encontrou diferença '
+                      'entre as duas versões.' if PT else
+                      'None of the main layers found a difference between the '
+                      'two versions.')
+        if not principais_ok:
+            interpreta += (' Nem todas rodaram: veja a cobertura abaixo.' if PT
+                           else ' Not all of them ran: see the coverage below.')
     leitura_1f = (f'<section class="umafrase"><h2>'
                   f'{"Leitura em uma frase" if PT else "In one sentence"}</h2>'
                   f'<p>{interpreta}</p></section>')
 
-    # por que este veredito
+    # por que este veredito — BUG 54 (v1.0.4): a explicação segue o que puxa
+    # o veredito. Antes, com treino × uso e forma ao mesmo tempo, o texto
+    # falava só de forma e dizia "nem de inconsistência entre treino e uso"
+    # sob um veredito ATENCAO causado justamente por isso.
+    partes_pq = []
     if raiz:
-        porque = (f'<code>{_e(", ".join(raiz))}</code> praticamente deixou de '
-                  f'participar da previsão e, na nova versão, aparece constante '
-                  f'nos dados de treino. Essa combinação sugere que a variável '
-                  f'pode ter sido perdida, neutralizada ou transformada '
-                  f'incorretamente antes do treinamento — é mais compatível com '
-                  f'falha de dados do que com uma mudança normal de '
-                  f'aprendizado.' if PT else
-                  f'The main evidence is the integrity layer: '
-                  f'<code>{_e(", ".join(raiz))}</code> stopped influencing the '
-                  f'model and is constant in the new version\'s training data.')
-    elif divs:
-        porque = (f'A nova versão continua usando as principais variáveis, mas '
-                  f'{n_div} delas passaram a influenciar a previsão de forma '
-                  f'diferente — com os mesmos dados de entrada. Não há sinal de '
-                  f'variável perdida nem de inconsistência entre treino e uso.'
-                  if PT else
-                  f'The main evidence is the behaviour layer: {n_div} feature(s) '
-                  f'show profiles differing beyond the expected noise, on the '
-                  f'same input data. There is no sign of a pipeline failure.')
-    elif skew:
-        porque = ('Os dados que chegam ao modelo mudaram em relação ao que '
-                  'ele viu no treino.' if PT else
-                  'The main evidence is the train/serving layer: incoming data '
-                  'differs from what the model saw in training.')
+        partes_pq.append(
+            f'<code>{_e(", ".join(raiz))}</code> praticamente deixou de '
+            f'participar da previsão.{conf_pt} Isso sugere que a variável pode '
+            f'ter sido perdida, neutralizada ou transformada incorretamente '
+            f'antes do treinamento — é mais compatível com falha de dados do '
+            f'que com uma mudança normal de aprendizado.' if PT else
+            f'The main evidence is the integrity layer: '
+            f'<code>{_e(", ".join(raiz))}</code> practically stopped taking '
+            f'part in the prediction.{conf_en} This suggests the feature may '
+            f'have been lost, neutralised or wrongly transformed before '
+            f'training — more consistent with a data failure than with '
+            f'ordinary relearning.')
+    if colapso:
+        partes_pq.append('O modelo novo passou a prever praticamente o mesmo '
+                         'valor para todos os casos.' if PT else
+                         'The new model now predicts nearly the same value for '
+                         'every case.')
+    if skew_extra:
+        partes_pq.append(f'Os dados que chegam ao modelo mudaram em relação ao '
+                         f'que ele viu no treino: {nomes(skew_extra)}.' if PT else
+                         f'Incoming data differs from what the model saw in '
+                         f'training: {nomes(skew_extra)}.')
+    if rele:
+        partes_pq.append(f'{nomes(rele)} deixou de ser usada pelo modelo novo, '
+                         f'embora continue chegando nos dados (reaprendizado).'
+                         if PT else
+                         f'{nomes(rele)} is no longer used by the new model, '
+                         f'although it still arrives in the data (relearning).')
+    if clones:
+        partes_pq.append(" ".join(
+            (f'<code>{_e(f)}</code> perdeu peso e <code>{_e(c)}</code>, quase '
+             f'idêntica, assumiu o lugar dela.' if PT else
+             f'<code>{_e(f)}</code> lost weight and <code>{_e(c)}</code>, a '
+             f'near-copy, took over.') for f, c in clones.items()))
+    if divs:
+        if not partes_pq:
+            txt = (f'A nova versão continua usando as principais variáveis, mas '
+                   f'{n_div} delas passaram a influenciar a previsão de forma '
+                   f'diferente — com os mesmos dados de entrada.' if PT else
+                   f'The main evidence is the behaviour layer: {n_div} '
+                   f'feature(s) show profiles differing beyond the expected '
+                   f'noise, on the same input data.')
+            # só nega o que foi medido e deu negativo
+            neg = []
+            if lac_int is None:
+                neg.append("variável perdida" if PT else "a lost feature")
+            if skew_ok and not skew_extra:
+                neg.append("inconsistência entre treino e uso" if PT else
+                           "train/serving inconsistency")
+            if neg:
+                txt += (' Não há sinal de ' + ' nem de '.join(neg) + '.' if PT
+                        else ' There is no sign of ' + ' nor of '.join(neg) + '.')
+            partes_pq.append(txt)
+        else:
+            partes_pq.append(f'Além disso, {n_div} relação(ões) mudaram de '
+                             f'forma.' if PT else
+                             f'In addition, {n_div} relationship(s) changed '
+                             f'shape.')
+    if ood:
+        partes_pq.append(f'Fora da faixa usual dos dados, as versões se '
+                         f'comportam de forma diferente em {nomes(ood)}.' if PT
+                         else f'Outside the usual data range, the versions '
+                         f'behave differently on {nomes(ood)}.')
+    if partes_pq:
+        porque = " ".join(partes_pq)
+    elif v == "INDETERMINADO":
+        porque = ('As verificações principais não produziram medição, então '
+                  'não há base para aprovar nem para bloquear.' if PT else
+                  'The main checks produced no measurement, so there is no '
+                  'basis to approve or to block.')
     else:
-        porque = ('Nenhuma camada medida encontrou mudança.' if PT else
-                  'No measured layer found a change.')
+        porque = ('Nenhuma das camadas principais encontrou mudança.' if PT else
+                  'None of the main layers found a change.')
+        if not principais_ok:
+            porque += (' Nem todas rodaram: veja a cobertura abaixo.' if PT
+                       else ' Not all of them ran: see the coverage below.')
     bloco_porque = (f'<section class="porque"><h2>'
                     f'{"Por que este veredito" if PT else "Why this verdict"}'
                     f'</h2><p>{porque}</p></section>')
@@ -516,13 +873,18 @@ def render(res: Dict[str, Any], lang: str = "auto") -> str:
         nota_cat = ""
 
     # impacto na decisão — só quando medido
+    # BUG 60 (v1.0.4): respondia "Sim." mesmo com 0 casos trocados, e
+    # pct/trocados/selecionados entravam no HTML sem escape.
     if dec.get("trocados") is not None:
+        _troc = _float(dec.get("trocados"))
+        mudou = _troc is None or _troc != 0
+        resp = ("Sim." if PT else "Yes.") if mudou else ("Não." if PT else "No.")
         bloco_dec = (f'<section class="dec"><h2>'
                      f'{"A mudança afetou a decisão?" if PT else "Did it change decisions?"}</h2>'
-                     f'<p class="grande"><b>{"Sim." if PT else "Yes."}</b> '
-                     f'<span class="num">{dec.get("pct","—")}%</span></p>'
-                     f'<p class="sub">{dec["trocados"]} '
-                     f'{"de" if PT else "of"} {dec.get("selecionados","—")} '
+                     f'<p class="grande"><b>{resp}</b> '
+                     f'<span class="num">{_e(dec.get("pct", "—"))}%</span></p>'
+                     f'<p class="sub">{_e(dec["trocados"])} '
+                     f'{"de" if PT else "of"} {_e(dec.get("selecionados", "—"))} '
                      f'{"casos selecionados mudaram entre as versões." if PT else "selected cases changed between versions."}'
                      f'</p></section>')
     else:
@@ -543,21 +905,22 @@ def render(res: Dict[str, Any], lang: str = "auto") -> str:
                   'If the removal was intentional, document and recalibrate.']
     elif pior is not None:
         g = pior.get("maior_gap") or {}
-        faixa = (f'{g.get("de")} a {g.get("ate")}' if "de" in g else "a faixa marcada")
-        passos = [f'Comece por <code>{_e(pior["feature"])}</code>: foi a maior '
-                  f'divergência (distância {pior.get("frechet")}).',
-                  f'Inspecione exemplos com <code>{_e(pior["feature"])}</code> '
+        faixa = (f'{_num(g.get("de"), ".4g")} a {_num(g.get("ate"), ".4g")}'
+                 if "de" in g else "a faixa marcada")
+        passos = [f'Comece por <code>{_e(pior.get("feature"))}</code>: foi a maior '
+                  f'divergência (distância {_num(pior.get("frechet"))}).',
+                  f'Inspecione exemplos com <code>{_e(pior.get("feature"))}</code> '
                   f'entre {faixa} — é onde as versões mais discordam.',
                   'Valide com quem conhece o domínio se a mudança é esperada.',
                   'Se for esperada, documente a justificativa e promova.',
                   'Se não for, compare os dados de treino das duas versões '
                   'nessa faixa antes do deploy.'] if PT else [
-                  f'Start with <code>{_e(pior["feature"])}</code>.',
+                  f'Start with <code>{_e(pior.get("feature"))}</code>.',
                   f'Inspect cases between {faixa}.',
                   'Validate with a domain expert whether the change is expected.',
                   'If expected, document it and promote.',
                   'If not, compare the training data of both versions first.']
-    elif skew:
+    elif skew_extra:
         passos = ['Recalibre com dados recentes antes de promover.',
                   'Verifique se a mudança nos dados é esperada.'] if PT else [
                   'Recalibrate with recent data before promoting.',
@@ -582,13 +945,43 @@ def render(res: Dict[str, Any], lang: str = "auto") -> str:
                       'transformations: encoding, imputation, new filters;',
                       'whether a near-copy took over;',
                       'who enters and leaves your decision rule.'])
+        elif skew_extra:
+            alvo = skew_extra[0]
+            motivo = ("os dados chegam diferentes do treino" if PT else
+                      "incoming data differs from training")
+            faixa = ""
+            itens = (['origem e período dos dados que o modelo recebe hoje;',
+                      'escala, unidade e preprocessing;',
+                      'se a mudança é sazonal ou permanente.'] if PT else
+                     ['source and period of the serving data;',
+                      'scale, unit and preprocessing;',
+                      'whether the change is seasonal or permanent.'])
+        elif rele:
+            alvo = rele[0]
+            motivo = ("deixou de ser usada pelo modelo novo (reaprendizado)"
+                      if PT else
+                      "no longer used by the new model (relearning)")
+            faixa = ""
+            itens = ([f'confirme que <code>{_e(alvo)}</code> continua chegando '
+                      f'com valores normais;',
+                      'verifique se o alvo, o período ou o filtro do treino '
+                      'mudaram entre as versões;',
+                      'valide com quem conhece o domínio se o modelo deve '
+                      'mesmo deixar de usá-la.'] if PT else
+                     [f'confirm that <code>{_e(alvo)}</code> still arrives '
+                      f'with normal values;',
+                      'check whether the target, period or training filter '
+                      'changed between versions;',
+                      'validate with a domain expert whether the model should '
+                      'stop using it.'])
         elif pior is not None:
             g = pior.get("maior_gap") or {}
-            alvo = pior["feature"]
+            alvo = pior.get("feature")
             motivo = (f'maior divergência observada (distância '
-                      f'{pior.get("frechet")})' if PT else
-                      f'largest divergence (distance {pior.get("frechet")})')
-            faixa = (f'{g.get("de")} – {g.get("ate")}' if "de" in g else "")
+                      f'{_num(pior.get("frechet"))})' if PT else
+                      f'largest divergence (distance {_num(pior.get("frechet"))})')
+            faixa = (f'{_num(g.get("de"), ".4g")} – {_num(g.get("ate"), ".4g")}'
+                     if "de" in g else "")
             itens = (['a distribuição dos dados de treino nessa faixa: '
                       'mais casos, menos casos, combinações novas?',
                       f'o cálculo de <code>{_e(alvo)}</code>: mudou alguma '
@@ -603,17 +996,6 @@ def render(res: Dict[str, Any], lang: str = "auto") -> str:
                       'concrete cases in that band whose score changed;',
                       'whether the same cases still enter your queue;',
                       'domain coherence: is the change expected?'])
-        elif skew:
-            alvo = skew[0]
-            motivo = ("os dados chegam diferentes do treino" if PT else
-                      "incoming data differs from training")
-            faixa = ""
-            itens = (['origem e período dos dados que o modelo recebe hoje;',
-                      'escala, unidade e preprocessing;',
-                      'se a mudança é sazonal ou permanente.'] if PT else
-                     ['source and period of the serving data;',
-                      'scale, unit and preprocessing;',
-                      'whether the change is seasonal or permanent.'])
         else:
             return ""
         fecho = ('Se a mudança for explicada pelos dados ou pelo domínio, '
@@ -648,16 +1030,16 @@ def render(res: Dict[str, Any], lang: str = "auto") -> str:
     # ── model diff: peso e comportamento lado a lado ──────────────────
     md = res.get("model_diff") or []
     def _linha_md(x):
-        p1, p2 = x.get("peso_v1", 0), x.get("peso_v2", 0)
-        d = x.get("delta_pp", 0)
+        p1, p2 = x.get("peso_v1"), x.get("peso_v2")
+        d = x.get("delta_pp")
         forma = ""
         if x.get("forma_mudou"):
             a, b = _forma(x.get("shape_v1"), lang), _forma(x.get("shape_v2"), lang)
             forma = (f'<span class="fm">{_e(a)} → {_e(b)}</span>' if a != b
                      else f'<span class="fm">{"mesma forma, curva diferente" if PT else "same shape, different curve"}</span>')
-        return (f'<li><code>{_e(x["feature"])}</code>'
-                f'<span class="pe">{p1:.0%} → {p2:.0%}'
-                f'<span class="dd">{d:+.1f} pp</span></span>{forma}</li>')
+        return (f'<li><code>{_e(x.get("feature"))}</code>'
+                f'<span class="pe">{_num(p1, ".0%")} → {_num(p2, ".0%")}'
+                f'<span class="dd">{_num(d, "+.1f")} pp</span></span>{forma}</li>')
     grupos = [
         ("saiu_do_modelo", "Saiu do modelo" if PT else "Left the model"),
         ("ganhou_influencia", "Ganhou influência" if PT else "Gained influence"),
@@ -710,7 +1092,11 @@ def render(res: Dict[str, Any], lang: str = "auto") -> str:
             # a expressão fica FORA da f-string: quebrar expressão em duas
             # linhas dentro de f-string só vale a partir do Python 3.12, e o
             # pacote suporta 3.9+ (bug 38, reportado por usuária no 3.11)
-            texto = _e(ausente.get("consequence") or pergunta)
+            # BUG 61: no laudo em inglês, a consequência vem traduzida
+            _cam = str(ausente.get("layer") or ausente.get("check") or "")
+            _cam = next((k for k, *_ in _CAMADAS_EN if k in _cam), _cam)
+            texto = _e(_consequencia(ausente.get("consequence"), _cam, lang)
+                       or pergunta)
             ticks += (f'<li class="falta"><span class="marca"></span>'
                       f'<div><b>{_e(titulo)}</b>'
                       f'<span class="perg">{texto}</span></div>'
@@ -727,130 +1113,141 @@ def render(res: Dict[str, Any], lang: str = "auto") -> str:
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{_e(t["titulo"])} — {_e(acao)}</title>
 <style>
-:root{{
+/* BUG 42 (v1.0.3): o estilo do laudo valia para a pagina inteira.
+   BUG 59 (v1.0.4): a correcao do 42 regrediu. `.folha *{{margin:0}}` tem
+   especificidade maior que `h2{{...}}`, `section{{...}}`, `th,td{{...}}`, entao
+   titulos e secoes perderam as margens no arquivo solto — e essas regras de
+   elemento continuavam sem escopo, restilizando o notebook hospedeiro.
+   Agora o reset usa `:where()` (especificidade zero) e TODA regra comeca
+   por `.folha`.
+   BUG 58 (v1.0.4): `--marca` em `:root,.folha` fazia o segundo laudo de um
+   notebook recolorir o primeiro (BLOQUEADO ficava verde). As cores do
+   veredito vao inline na raiz de cada laudo; aqui so as neutras. */
+.folha{{
   --papel:#FAFAFB; --tinta:#16181D; --suave:#585C66; --regua:#E1E2E6;
-  --marca:{cor}; --marca-fundo:{fundo};
 }}
-*{{box-sizing:border-box;margin:0;padding:0}}
-body{{background:var(--papel);color:var(--tinta);
+:where(.folha),:where(.folha *){{box-sizing:border-box;margin:0;padding:0}}
+.folha{{background:var(--papel);color:var(--tinta);
   font:17px/1.62 "Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
   -webkit-font-smoothing:antialiased;
-  font-variant-numeric:tabular-nums lining-nums}}
-.folha{{max-width:46rem;margin:0 auto;padding:clamp(28px,6vw,72px) clamp(20px,5vw,48px) 72px}}
+  font-variant-numeric:tabular-nums lining-nums;
+  max-width:46rem;margin:0 auto;
+  padding:clamp(28px,6vw,72px) clamp(20px,5vw,48px) 72px}}
 
 /* cabeçalho */
-.topo{{border-bottom:1px solid var(--regua);padding-bottom:18px;
+.folha .topo{{border-bottom:1px solid var(--regua);padding-bottom:18px;
   margin-bottom:34px;display:flex;justify-content:space-between;
   align-items:baseline;gap:16px;flex-wrap:wrap}}
-.topo h1{{font-size:18px;font-weight:600;letter-spacing:.01em}}
-.topo .quando{{font-size:14px;color:var(--suave)}}
+.folha .topo h1{{font-size:18px;font-weight:600;letter-spacing:.01em}}
+.folha .topo .quando{{font-size:14px;color:var(--suave)}}
 
 /* veredito */
-.vered{{background:var(--marca-fundo);border-left:4px solid var(--marca);
+.folha .vered{{background:var(--marca-fundo);border-left:4px solid var(--marca);
   padding:22px 26px;margin-bottom:34px}}
-.vered .rotulo{{font-size:14px;color:var(--suave);margin-bottom:4px}}
-.vered .valor{{font-size:clamp(28px,4.6vw,38px);line-height:1.1;
+.folha .vered .rotulo{{font-size:14px;color:var(--suave);margin-bottom:4px}}
+.folha .vered .valor{{font-size:clamp(28px,4.6vw,38px);line-height:1.1;
   font-weight:600;color:var(--marca);letter-spacing:-.01em}}
-.vered .acao{{font-size:16px;margin-top:8px}}
+.folha .vered .acao{{font-size:16px;margin-top:8px}}
 
-h2{{font-size:15px;font-weight:600;margin-bottom:12px;letter-spacing:.01em}}
-section{{margin-bottom:34px}}
-p{{max-width:62ch}}
+.folha h2{{font-size:15px;font-weight:600;margin-bottom:12px;letter-spacing:.01em}}
+.folha section{{margin-bottom:34px}}
+.folha p{{max-width:62ch}}
 
 /* causa raiz */
-.raiz{{border:1px solid var(--regua);padding:22px 26px;background:#fff}}
-.vars{{list-style:none;display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px}}
-.vars code{{background:var(--marca-fundo);color:var(--marca);
+.folha .raiz{{border:1px solid var(--regua);padding:22px 26px;background:#fff}}
+.folha .vars{{list-style:none;display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px}}
+.folha .vars code{{background:var(--marca-fundo);color:var(--marca);
   border:1px solid var(--marca);padding:3px 10px;font-size:15px;
   font-family:ui-monospace,"SF Mono",Menlo,monospace}}
-.raiz p{{font-size:15.5px;color:var(--suave)}}
+.folha .raiz p{{font-size:15.5px;color:var(--suave)}}
 
 /* tabelas */
-p.rescard{{font-size:14px;font-weight:600;color:#2a2a27;margin:0 0 8px}}
-article.div h3 .d{{display:flex;flex-direction:column;align-items:flex-end;gap:1px}}
-article.div h3 .d b{{font-size:12px;color:#a3241c;font-weight:600}}
-article.div h3 .d i{{font-size:11px;color:#9a9a95;font-style:normal}}
-p.legenda-fixa{{font-size:12.5px;color:#4a4a45;margin:0 0 6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center}}
-p.legenda-fixa .v1{{color:#8a8a85}} p.legenda-fixa .v2{{color:#a3241c}} p.legenda-fixa .fx{{color:#e6cfcb}}
-section.dec p.grande{{display:flex;align-items:baseline;gap:10px;margin:2px 0}}
-section.dec .num{{font-size:34px;font-weight:700;color:#8A6413;letter-spacing:-.02em}}
-section.dec p.sub{{color:#4a4a45;font-size:14px;margin:0}}
-section.umafrase p{{font-size:15.5px;line-height:1.5;color:#2a2a27}}
-div.ficha{{display:flex;gap:22px;flex-wrap:wrap;margin:2px 0 10px}}
-div.ficha .f{{display:flex;flex-direction:column;gap:1px}}
-div.ficha .f span{{font-size:11px;color:#8a8a85;text-transform:uppercase;letter-spacing:.04em}}
-div.ficha .f b{{font-size:13.5px;font-weight:600;color:#2a2a27}}
-p.ajuda.destaque{{color:#3a3a36;border-left:2px solid #a3241c;padding-left:10px}}
-p.lema{{font-size:14px;font-weight:600;color:#2a2a27;margin-top:6px}}
-section.invest ol{{font-size:14px;line-height:1.6;padding-left:20px}}
-section.invest p.fecho{{font-size:13.5px;color:#4a4a45;border-top:1px solid #eee;padding-top:8px;margin-top:10px}}
-section.passos.oculto{{display:none}}
-ul.lista li.grupo{{display:block;grid-column:1/-1;width:100%;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#8a8a85;margin:14px 0 2px;border:0;padding:0;grid-template-columns:none}}
-section.diff h3{{font-size:13px;margin:14px 0 4px;color:#3a3a36;text-transform:uppercase;letter-spacing:.04em}}
-ul.md{{list-style:none;margin:0;padding:0}}
-ul.md li{{display:flex;gap:10px;align-items:baseline;padding:5px 0;border-bottom:1px solid #eee;font-size:14px;flex-wrap:wrap}}
-ul.md li code{{min-width:160px}}
-ul.md .pe{{color:#3a3a36}} ul.md .dd{{color:#8a8a85;margin-left:8px;font-size:12.5px}}
-ul.md .fm{{color:#a3241c;font-size:12.5px}}
-ul.chips{{list-style:none;margin:0;padding:0;display:flex;gap:8px;flex-wrap:wrap}}
-ul.chips li{{font-size:13px;padding:4px 10px;border-radius:999px;background:#f2f2f0;color:#3a3a36}}
-ul.chips li.al{{background:#fbf0ee;color:#8E2226}} ul.chips li span{{margin-right:6px}}
-section.porque p,section.nota p,section.dec p{{font-size:14px;line-height:1.55}}
-section.passos ol{{font-size:14px;line-height:1.6;padding-left:20px}}
-section.dec.vazio p{{color:#8a8a85}}
-article.div{{border:1px solid #e4e4e0;border-radius:6px;padding:14px 16px;margin:12px 0;background:#fff}}
-article.div h3{{margin:0 0 8px;font-size:15px;font-weight:600;display:flex;justify-content:space-between;align-items:baseline}}
-article.div h3 .d{{font-size:12px;color:#8a8a85;font-weight:400}}
-article.div .linha{{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap}}
-article.div p{{flex:1 1 300px;margin:0;font-size:14px;line-height:1.55}}
-svg text.ax{{font-size:9px;fill:#8a8a85;font-family:sans-serif}}
-p.ajuda{{font-size:12.5px;color:#6f6f6a;margin:0 0 4px}}
-td.curva{{padding:2px 0 0;text-align:right}}td.curva svg{{display:block;margin-left:auto}}
-table{{width:100%;border-collapse:collapse;font-size:15.5px}}
-th,td{{text-align:left;padding:10px 12px;border-bottom:1px solid var(--regua)}}
-th{{font-size:13px;font-weight:600;color:var(--suave);
+.folha p.rescard{{font-size:14px;font-weight:600;color:#2a2a27;margin:0 0 8px}}
+.folha article.div h3 .d{{display:flex;flex-direction:column;align-items:flex-end;gap:1px}}
+.folha article.div h3 .d b{{font-size:12px;color:#a3241c;font-weight:600}}
+.folha article.div h3 .d i{{font-size:11px;color:#9a9a95;font-style:normal}}
+.folha p.legenda-fixa{{font-size:12.5px;color:#4a4a45;margin:0 0 6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center}}
+.folha p.legenda-fixa .v1{{color:#8a8a85}} .folha p.legenda-fixa .v2{{color:#a3241c}} .folha p.legenda-fixa .fx{{color:#e6cfcb}}
+.folha section.dec p.grande{{display:flex;align-items:baseline;gap:10px;margin:2px 0}}
+.folha section.dec .num{{font-size:34px;font-weight:700;color:#8A6413;letter-spacing:-.02em}}
+.folha section.dec p.sub{{color:#4a4a45;font-size:14px;margin:0}}
+.folha section.umafrase p{{font-size:15.5px;line-height:1.5;color:#2a2a27}}
+.folha div.ficha{{display:flex;gap:22px;flex-wrap:wrap;margin:2px 0 10px}}
+.folha div.ficha .f{{display:flex;flex-direction:column;gap:1px}}
+.folha div.ficha .f span{{font-size:11px;color:#8a8a85;text-transform:uppercase;letter-spacing:.04em}}
+.folha div.ficha .f b{{font-size:13.5px;font-weight:600;color:#2a2a27}}
+.folha p.ajuda.destaque{{color:#3a3a36;border-left:2px solid #a3241c;padding-left:10px}}
+.folha p.lema{{font-size:14px;font-weight:600;color:#2a2a27;margin-top:6px}}
+.folha section.invest ol{{font-size:14px;line-height:1.6;padding-left:20px}}
+.folha section.invest p.fecho{{font-size:13.5px;color:#4a4a45;border-top:1px solid #eee;padding-top:8px;margin-top:10px}}
+.folha section.passos.oculto{{display:none}}
+.folha ul.lista li.grupo{{display:block;grid-column:1/-1;width:100%;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#8a8a85;margin:14px 0 2px;border:0;padding:0;grid-template-columns:none}}
+.folha section.diff h3{{font-size:13px;margin:14px 0 4px;color:#3a3a36;text-transform:uppercase;letter-spacing:.04em}}
+.folha ul.md{{list-style:none;margin:0;padding:0}}
+.folha ul.md li{{display:flex;gap:10px;align-items:baseline;padding:5px 0;border-bottom:1px solid #eee;font-size:14px;flex-wrap:wrap}}
+.folha ul.md li code{{min-width:160px}}
+.folha ul.md .pe{{color:#3a3a36}} .folha ul.md .dd{{color:#8a8a85;margin-left:8px;font-size:12.5px}}
+.folha ul.md .fm{{color:#a3241c;font-size:12.5px}}
+.folha ul.chips{{list-style:none;margin:0;padding:0;display:flex;gap:8px;flex-wrap:wrap}}
+.folha ul.chips li{{font-size:13px;padding:4px 10px;border-radius:999px;background:#f2f2f0;color:#3a3a36}}
+.folha ul.chips li.al{{background:#fbf0ee;color:#8E2226}} .folha ul.chips li span{{margin-right:6px}}
+.folha section.porque p,.folha section.nota p,.folha section.dec p{{font-size:14px;line-height:1.55}}
+.folha section.passos ol{{font-size:14px;line-height:1.6;padding-left:20px}}
+.folha section.dec.vazio p{{color:#8a8a85}}
+.folha article.div{{border:1px solid #e4e4e0;border-radius:6px;padding:14px 16px;margin:12px 0;background:#fff}}
+.folha article.div h3{{margin:0 0 8px;font-size:15px;font-weight:600;display:flex;justify-content:space-between;align-items:baseline}}
+.folha article.div h3 .d{{font-size:12px;color:#8a8a85;font-weight:400}}
+.folha article.div .linha{{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap}}
+.folha article.div p{{flex:1 1 300px;margin:0;font-size:14px;line-height:1.55}}
+.folha svg text.ax{{font-size:9px;fill:#8a8a85;font-family:sans-serif}}
+.folha p.ajuda{{font-size:12.5px;color:#6f6f6a;margin:0 0 4px}}
+.folha td.curva{{padding:2px 0 0;text-align:right}}.folha td.curva svg{{display:block;margin-left:auto}}
+.folha table{{width:100%;border-collapse:collapse;font-size:15.5px}}
+.folha th,.folha td{{text-align:left;padding:10px 12px;border-bottom:1px solid var(--regua)}}
+.folha th{{font-size:13px;font-weight:600;color:var(--suave);
   border-bottom-width:1.5px}}
-td.n{{text-align:right;font-variant-numeric:tabular-nums}}
-code{{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:14.5px}}
+.folha td.n{{text-align:right;font-variant-numeric:tabular-nums}}
+.folha code{{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:14.5px}}
 
 /* cobertura — o elemento de maior peso */
-.cob{{border-top:2px solid var(--tinta);padding-top:22px}}
-.cob .resumo{{display:flex;align-items:baseline;gap:12px;margin-bottom:6px}}
-.cob .fracao{{font-size:34px;font-weight:600;line-height:1}}
-.cob .fracao span{{color:var(--suave);font-weight:400}}
-.cob .legenda{{font-size:15px;color:var(--suave)}}
-.cob > p{{font-size:15px;color:var(--suave);margin-bottom:20px;max-width:58ch}}
-.lista{{list-style:none}}
-.lista li{{display:grid;grid-template-columns:18px 1fr auto;gap:14px;
+.folha .cob{{border-top:2px solid var(--tinta);padding-top:22px}}
+.folha .cob .resumo{{display:flex;align-items:baseline;gap:12px;margin-bottom:6px}}
+.folha .cob .fracao{{font-size:34px;font-weight:600;line-height:1}}
+.folha .cob .fracao span{{color:var(--suave);font-weight:400}}
+.folha .cob .legenda{{font-size:15px;color:var(--suave)}}
+.folha .cob > p{{font-size:15px;color:var(--suave);margin-bottom:20px;max-width:58ch}}
+.folha .lista{{list-style:none}}
+.folha .lista li{{display:grid;grid-template-columns:18px 1fr auto;gap:14px;
   align-items:start;padding:11px 0;border-bottom:1px solid var(--regua)}}
-.lista b{{font-weight:600;font-size:15.5px;display:block}}
-.perg{{display:block;font-size:14px;color:var(--suave);margin-top:2px}}
-.estado{{font-size:13px;color:var(--suave);white-space:nowrap;padding-top:2px}}
-.marca{{width:11px;height:11px;margin-top:6px;border:1.5px solid var(--tinta)}}
-.feito .marca{{background:var(--tinta)}}
-.falta .marca{{border-style:dashed;border-color:var(--suave)}}
-.falta b,.falta .estado{{color:var(--suave)}}
+.folha .lista b{{font-weight:600;font-size:15.5px;display:block}}
+.folha .perg{{display:block;font-size:14px;color:var(--suave);margin-top:2px}}
+.folha .estado{{font-size:13px;color:var(--suave);white-space:nowrap;padding-top:2px}}
+.folha .marca{{width:11px;height:11px;margin-top:6px;border:1.5px solid var(--tinta)}}
+.folha .feito .marca{{background:var(--tinta)}}
+.folha .falta .marca{{border-style:dashed;border-color:var(--suave)}}
+.folha .falta b,.folha .falta .estado{{color:var(--suave)}}
 
 /* rodapé */
-.pe{{margin-top:40px;padding-top:18px;border-top:1px solid var(--regua);
+.folha .rodape{{margin-top:40px;padding-top:18px;border-top:1px solid var(--regua);
   font-size:13.5px;color:var(--suave);line-height:1.55}}
 
 @media print{{
-  body{{background:#fff}}
+  .folha{{background:#fff}}
   .folha{{max-width:none;padding:0}}
-  .vered,.raiz{{break-inside:avoid}}
+  .folha .vered,.folha .raiz{{break-inside:avoid}}
 }}
 @media (max-width:520px){{
-  .lista li{{grid-template-columns:18px 1fr;gap:10px}}
-  .estado{{grid-column:2;padding-top:4px}}
+  .folha .lista li{{grid-template-columns:18px 1fr;gap:10px}}
+  .folha .estado{{grid-column:2;padding-top:4px}}
 }}
 </style></head><body>
-<div class="folha">
+<div class="folha" style="--marca:{cor};--marca-fundo:{fundo}">
 
   <header class="topo">
     <h1>{_e(t["titulo"])}</h1>
     <span class="quando">{_e(t["amostras"].format(n=res.get("n_eval","—")))}</span>
   </header>
+  {_linha_versoes(res, PT)}
 
   <div class="vered">
     <div class="rotulo">{_e(t["resultado"])}</div>
@@ -878,7 +1275,7 @@ code{{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:14.5px}}
     <ul class="lista">{ticks}</ul>
   </section>
 
-  <footer class="pe">
+  <footer class="rodape">
     {origem}{_e(t["rodape"].format(metodo=res.get("representation","—")))}
   </footer>
 
