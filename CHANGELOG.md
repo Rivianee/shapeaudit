@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.0.5
+
+Correções achadas pelo CI nas versões mínimas e ao refazer os experimentos
+do artigo.
+
+- **shap antigo em classificação** (BUG 95). Com shap < 0.45, o
+  TreeExplainer devolve uma lista com uma matriz por classe. `FairnessChecker`,
+  `ShapeDivergenceDetector`, `ShapeSlopeDetector` e `ShapeSilenceAnalyzer`
+  liam essa lista no eixo errado; `UniversalCanaryDetector` engolia o erro e
+  trocava SHAP por outro método sem avisar. Agora os cinco aceitam os dois
+  formatos (`matriz_shap`). Teste: `tests/test_shap_antigo.py`.
+- **XGBoost 3.x com shap < 0.49** (BUG 96). O shap antigo não lê esses
+  modelos. O Guard já dava INDETERMINADO, mas com o erro cru; e
+  `calibrar_limiar` dizia que o par "não é modelo de árvore". Agora as duas
+  mensagens mandam atualizar o shap (`pip install -U shap`).
+- Documentação: números refeitos com a 1.0.4 — limiar de 0,12 a **0,42** em
+  seis domínios (era 0,47), boosting **2,5 a 6×** a floresta (LightGBM
+  2,5–3,5×, XGBoost 5,6–6,3×), **157** retreinos distintos do ONS (eram
+  contados 161 com duplicatas).
+
 ## 1.0.4
 
 Revisão completa da biblioteca por quatro revisores independentes, cada um

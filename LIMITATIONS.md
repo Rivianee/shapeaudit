@@ -10,9 +10,9 @@
 > | degradação parcial | não bloqueia até 80% das linhas (perda de 4 pontos de R²) |
 > | bases de avaliação pequenas (< ~400 linhas) | forma pede revisão em ~1/3 dos retreinos saudáveis |
 > | fora de árvores (MLP, ridge) | **experimental**: bloqueia falha de pipeline, mas alarma mais e é ~10x mais lento |
-> | boosting (XGBoost, LightGBM) | limiar 5 a 6 vezes o da floresta nos mesmos dados — calibre por família |
-> | limiar da distância | 0,12 a 0,47 em seis domínios; calibre com `calibrar_limiar` |
-> | prevalência em retreino real | 5% (afluência) a 41% (carga) em 161 retreinos do ONS |
+> | boosting (XGBoost, LightGBM) | limiar 2,5 a 6 vezes o da floresta nos mesmos dados (LightGBM 2,5–3,5×, XGBoost 5,6–6,3×) — calibre por família |
+> | limiar da distância | 0,12 a 0,42 em seis domínios; calibre com `calibrar_limiar` |
+> | prevalência em retreino real | 5% (afluência) a 43% (carga) em 157 retreinos distintos do ONS |
 > | sazonalidade | continua indistinguível de deriva |
 > | janela de avaliação | muda o veredito quando a correlação entre duas variáveis fica perto de 0,95 (ver 7-bis) |
 > | protocolo de avaliação | em série temporal o veredito agregado satura em ATENÇÃO: 46 de 51 (avaliação futura) e 52 de 59 (avaliação sobre o histórico) — ver 7-ter |
@@ -316,7 +316,7 @@ As duas afirmações centrais não eram artefato da sobreposição:
 | afirmação | sobreposto | avaliação limpa |
 |---|---|---|
 | ΔR² da falha de pipeline (CMO) | 0,0032 | **0,0017** (menor) |
-| bloqueios falsos em retreino real | 0 / 161 | **0 / 51** |
+| bloqueios falsos em retreino real | 0 / 106 | **0 / 51** |
 | prevalência de divergência de forma | 5% | **6%** |
 
 O ΔR² **diminui** com dado limpo: a memorização ajudava os dois modelos por
@@ -330,7 +330,7 @@ treino. Nesse protocolo, a camada treino/serving dispara em **48 de 51**
 retreinos saudáveis (94%) na 1.0.3 e em **46 de 51** (90%) na 1.0.4.
 
 **Atualização 1.0.4 — o protocolo publicado também satura.** O protocolo
-dos 161 retreinos avalia numa amostra do histórico inteiro, com o modelo
+dos 106 retreinos (afluência e carga) avalia numa amostra do histórico inteiro, com o modelo
 treinado numa janela de 2 anos. Ali também treino e avaliação diferem por
 construção. Até a 1.0.3 isso ficava escondido: `pipeline.combinar` (bug 76)
 descartava o ATENÇÃO que o próprio Guard emitia. Refeito na 1.0.4:
@@ -406,7 +406,7 @@ estreita: calibrar ajuda, mas não resolve.
    Isso só pega o caso extremo; o espúrio acima não é plano.
 
 **Por que não mudamos a métrica.** Trocar a normalização mudaria todos os
-números validados (161 retreinos do ONS, as duas bancadas). Fica como
+números validados (157 retreinos do ONS, as duas bancadas). Fica como
 limite declarado até haver uma alternativa medida nas mesmas bancadas.
 
 ## 7-quinquies. Multiclasse e o detector PSI-SHAP (v1.0.4)

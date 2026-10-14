@@ -177,7 +177,8 @@ class ShapeSilenceAnalyzer:
                 shapes1:       Optional[dict] = None,
                 shapes2:       Optional[dict] = None) -> list:
         """Analisa silêncios para todas as features."""
-        sv1 = np.asarray(sv1); sv2 = np.asarray(sv2)
+        from .frechet import como_array_shap
+        sv1 = como_array_shap(sv1); sv2 = como_array_shap(sv2)   # BUG 95
         results = []
 
         for i, f in enumerate(feature_names):

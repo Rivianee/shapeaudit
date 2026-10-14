@@ -31,8 +31,8 @@ def cenario():
     m = RandomForestClassifier(n_estimators=50, max_depth=6,
                                random_state=0, n_jobs=1).fit(X, y)
     s = shap.TreeExplainer(m).shap_values(X)
-    sv = s[:, :, 1] if getattr(s, 'ndim', 2) == 3 else s
-    return X, sv
+    from modelcheck.frechet import matriz_shap
+    return X, matriz_shap(s)   # shap antigo devolve lista (BUG 95)
 
 
 # ═══ BUG 29: coluna inexistente dava aprovação silenciosa ═════════════

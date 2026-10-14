@@ -89,6 +89,7 @@ Os experimentos sempre passavam DataFrame, nomes na ordem e floresta de
 | `test_edge_cases.py` | n mínimo, variável constante, tudo irrelevante |
 | `test_comparabilidade.py` | condições que invalidam a comparação são declaradas |
 | `test_classes_de_bug.py` | guardas por classe (bugs 31–42), incluindo sintaxe que só existe no Python 3.12 |
+| `test_shap_antigo.py` | SHAP no formato do shap antigo (lista por classe) dá o mesmo resultado que o novo (bug 95) |
 
 ### 5. Estado escondido
 

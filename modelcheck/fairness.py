@@ -60,10 +60,8 @@ class FairnessChecker:
         devolve. Mesmo defeito já corrigido em shape.py; aqui passou
         despercebido porque o módulo não tinha teste.
         """
-        a = np.asarray(getattr(sv, "values", sv), dtype=float)
-        if a.ndim == 3:
-            a = a[:, :, 1] if a.shape[2] > 1 else a[:, :, 0]
-        return a
+        from .frechet import matriz_shap
+        return matriz_shap(sv)   # BUG 95: aceita a lista do shap antigo
 
     def check(self, shap_values, X) -> dict:
         """

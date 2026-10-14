@@ -134,8 +134,9 @@ class ShapeSlopeDetector:
             alert          : tipo de alerta (None se sem divergência)
             alert_type     : SLOPE_AMPLIFIED | SLOPE_FLATTENED | SLOPE_INVERTED
         """
-        sv1 = np.asarray(sv1)
-        sv2 = np.asarray(sv2)
+        from .frechet import como_array_shap
+        sv1 = como_array_shap(sv1)   # BUG 95: lista do shap antigo
+        sv2 = como_array_shap(sv2)
         results = []
 
         for i, f in enumerate(feature_names):

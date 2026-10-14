@@ -103,8 +103,9 @@ Em domínio com efeito por interação forte, calibrar não é opcional: com o
 limiar padrão, retreinos saudáveis pedem revisão quase sempre
 (`LIMITATIONS.md`, seção 7-quater).
 
-Medido: de 0,12 a 0,47 em seis conjuntos de dados, e o limiar de modelos de
-boosting é cinco a seis vezes o de florestas nos mesmos dados. Calibre por
+Medido: de 0,12 a 0,42 em seis conjuntos de dados, e o limiar de modelos de
+boosting é 2,5 a 6 vezes o de florestas nos mesmos dados (LightGBM 2,5–3,5×,
+XGBoost 5,6–6,3×). Calibre por
 domínio **e** por família de modelo.
 
 ## O que ele não faz
@@ -122,7 +123,7 @@ domínio **e** por família de modelo.
 
 ## Confiança no veredito
 
-Em 240 controles saudáveis de benchmark, 161 retreinos reais de séries públicas
+Em 240 controles saudáveis de benchmark, 157 retreinos reais de séries públicas
 do setor elétrico brasileiro e 12 conjuntos públicos, **nenhum retreino saudável
 foi bloqueado**. Quando o pipeline quebrou de verdade, bloqueou 16 de 18 casos
 nomeando a variável.

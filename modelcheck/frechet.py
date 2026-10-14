@@ -99,6 +99,45 @@ def como_array_shap(sv) -> np.ndarray:
     return sv
 
 
+def explicar_erro_shap(erro, *modelos) -> str:
+    """
+    Mensagem acionável para uma falha do TreeExplainer.
+
+    BUG 96 (v1.0.5): shap < 0.49 não lê modelos do XGBoost 3.x ("could not
+    convert string to float: '[...]'"). O laudo mostrava o erro cru e
+    `calibrar_limiar` dizia que o par "não é modelo de árvore" — errado: é
+    árvore, o shap instalado é que é antigo.
+    """
+    msg = str(erro)
+    xgb = any(type(m).__module__.split(".")[0] == "xgboost" for m in modelos)
+    if xgb and "could not convert string to float" in msg:
+        try:
+            import shap
+            v = shap.__version__
+        except Exception:
+            v = "?"
+        return (f"o shap {v} não lê modelos do XGBoost 3.x; atualize com "
+                f"`pip install -U shap` (erro original: {msg})")
+    return msg
+
+
+def matriz_shap(sv) -> np.ndarray:
+    """
+    SHAP do usuário -> matriz (n, p). Aceita DataFrame/Explanation (.values),
+    array 2D/3D e a LISTA por classe do shap antigo (< 0.45). Em 3D fica com
+    a classe 1 (binário), como o resto da biblioteca.
+
+    BUG 95 (v1.0.5): fairness, shape, slope, silence e universal liam a lista
+    do shap antigo com np.asarray, que dá (classes, n, p): o eixo errado.
+    universal.py ainda engolia o erro e trocava SHAP por outro método em
+    silêncio. Apareceu no CI com as versões mínimas (shap 0.44).
+    """
+    a = como_array_shap(getattr(sv, "values", sv))
+    if a.ndim == 3:
+        a = a[:, :, 1] if a.shape[2] > 1 else a[:, :, 0]
+    return a
+
+
 def fatias_por_classe(sv) -> list:
     """
     Lista de matrizes (n, p) a comparar.
@@ -423,13 +462,14 @@ def calibrar_limiar(pares, X_eval, feature_names=None, quantil: float = 0.95,
     """
     import shap
     fn = list(feature_names or X_eval.columns)
-    dists, por_var, pulados = [], {}, 0
+    dists, por_var, pulados, erro = [], {}, 0, None
     for m1, m2 in pares:
         try:
             s1 = como_array_shap(shap.TreeExplainer(m1).shap_values(X_eval))
             s2 = como_array_shap(shap.TreeExplainer(m2).shap_values(X_eval))
-        except Exception:
-            pulados += 1   # par sem TreeSHAP (modelo que não é árvore)
+        except Exception as e:
+            pulados += 1   # par sem TreeSHAP
+            erro = erro or explicar_erro_shap(e, m1, m2)
             continue
         # BUG 90 (v1.0.4): só media a classe 0, enquanto o Guard compara
         # todas e fica com a maior distância. Com 3 classes o limiar saía
@@ -445,9 +485,8 @@ def calibrar_limiar(pares, X_eval, feature_names=None, quantil: float = 0.95,
     if len(dists) < 5:
         # BUG 90: devolvia limiar=None, e Guard(frechet_threshold=None)
         # usava o padrão sem avisar — o fluxo do README calibrava "em vão".
-        motivo = (f"{pulados} de {len(pares)} pares não são modelos de árvore "
-                  "(a calibração usa TreeSHAP)" if pulados else
-                  "poucos pares saudáveis")
+        motivo = (f"o TreeSHAP falhou em {pulados} de {len(pares)} pares: "
+                  f"{erro}" if pulados else "poucos pares saudáveis")
         raise ValueError(
             f"calibrar_limiar: só {len(dists)} distâncias medidas ({motivo}); "
             "são necessárias ao menos 5. Use mais pares ou mais variáveis.")

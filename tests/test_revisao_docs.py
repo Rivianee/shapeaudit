@@ -93,8 +93,21 @@ def test_calibrar_fora_de_arvore_diz_o_motivo(dados):
     from sklearn.linear_model import Ridge
     X, y = dados
     m = Ridge().fit(X, y)
-    with pytest.raises(ValueError, match="não são modelos de árvore"):
+    with pytest.raises(ValueError, match="TreeSHAP falhou em 3 de 3"):
         calibrar_limiar([(m, m)] * 3, X)
+
+
+def test_xgboost_com_shap_antigo_manda_atualizar():
+    """BUG 96: o erro do shap < 0.49 com XGBoost 3.x vira instrução."""
+    from modelcheck.frechet import explicar_erro_shap
+
+    class XGBFalso:
+        pass
+    XGBFalso.__module__ = "xgboost.sklearn"
+    e = ValueError("could not convert string to float: '[1.0E0]'")
+    msg = explicar_erro_shap(e, XGBFalso())
+    assert "pip install -U shap" in msg and "XGBoost" in msg
+    assert explicar_erro_shap(e, object()) == str(e)   # sem xgboost: intacto
 
 
 def test_calibrar_multiclasse_mede_todas_as_classes():

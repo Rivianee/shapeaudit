@@ -41,9 +41,8 @@ def _repr_matrix(model, X, feature_names, use_shap=True,
             import shap
             Xs = X.sample(min(n_sample, len(X)), random_state=seed)
             sv = shap.TreeExplainer(model).shap_values(Xs)
-            if sv.ndim == 3:
-                sv = sv[:, :, 1]
-            return np.asarray(sv, dtype=float), 'SHAP'
+            from .frechet import matriz_shap
+            return matriz_shap(sv), 'SHAP'   # BUG 95: lista do shap antigo
         except Exception:
             pass
     from modelcheck.ale_fast import sample_embeddings_ale

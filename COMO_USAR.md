@@ -143,8 +143,8 @@ pares = [(modelo_jan, modelo_fev), (modelo_fev, modelo_mar), ...]
 print(calibrar_limiar(pares, X_aval)['limiar'])
 ```
 
-Medido: de 0,12 a 0,47 em seis domínios, e o limiar do XGBoost é **cinco a seis
-vezes** o da floresta nos mesmos dados. Calibre por domínio **e** por família.
+Medido: de 0,12 a 0,42 em seis domínios, e o limiar do boosting é **2,5 a 6
+vezes** o da floresta nos mesmos dados (LightGBM 2,5–3,5×, XGBoost 5,6–6,3×). Calibre por domínio **e** por família.
 
 ## 8. No CI
 

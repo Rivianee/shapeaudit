@@ -125,7 +125,9 @@ def _run_layer1(model_v1, model_v2, X_eval, y_eval,
             results['slope'] = {'alerts': slope_alerts}
             results['sv1'] = sv1; results['sv2'] = sv2
         except Exception as e:
-            results['sdd'] = {'divs': [], 'method': f'SHAP_ERROR:{e}'}
+            from modelcheck.frechet import explicar_erro_shap
+            results['sdd'] = {'divs': [], 'method':
+                              f'SHAP_ERROR:{explicar_erro_shap(e, model_v1, model_v2)}'}
             results['slope'] = {'alerts': []}
     else:
         try:

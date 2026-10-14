@@ -214,11 +214,8 @@ class ShapeDivergenceDetector:
         devolve por padrão. Quem chamasse a classe diretamente com a saída
         crua do SHAP recebia exceção.
         """
-        a = getattr(sv, 'values', sv)
-        a = np.asarray(a, dtype=float)
-        if a.ndim == 3:                       # classificação: (n, p, classes)
-            a = a[:, :, 1] if a.shape[2] > 1 else a[:, :, 0]
-        return a
+        from .frechet import matriz_shap
+        return matriz_shap(sv)   # BUG 95: aceita a lista do shap antigo
 
     @staticmethod
     def _forma_estavel(values, sv_col, n_boot=8, frac=0.7, seed=0):
